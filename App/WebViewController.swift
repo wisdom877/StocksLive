@@ -35,6 +35,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     private static let bridgeJS: String = """
     (function () {
       if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.dndLive) return;
+      // 告诉网页这一版壳支持哪些能力，网页据此决定怎么响应铃，老壳自动降级
+      window.wkNativeCap = { ring: 1, vibe: 1 };
       window.Capacitor = window.Capacitor || {};
       window.Capacitor.Plugins = window.Capacitor.Plugins || {};
       if (!navigator.vibrate) {
