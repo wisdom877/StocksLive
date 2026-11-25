@@ -5,7 +5,7 @@ struct DndLiveWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DndActivityAttributes.self) { context in
             LockCard(context: context)
-                .padding(.horizontal, 16).padding(.vertical, 14)
+                .padding(.horizontal, 14).padding(.vertical, 12)
                 .activityBackgroundTint(Color.black.opacity(0.55))
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
@@ -43,6 +43,42 @@ struct DndLiveWidget: Widget {
 
 /// 一层标题 + 一个巨大倒计时 + 一条细进度条；左侧环形表示步骤进度，行情态换成折线图标
 struct LockCard: View {
+    @Environment(\.activityFamily) private var family
+    let context: ActivityViewContext<DndActivityAttributes>
+
+    var body: some View {
+        if family == .small {
+            WatchCard(context: context)
+        } else {
+            PhoneCard(context: context)
+        }
+    }
+}
+
+/// 手表（small 家族）：只留环、标题、大倒计时、一条极细进度线，其余全部砍掉
+struct WatchCard: View {
+    let context: ActivityViewContext<DndActivityAttributes>
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Leading(context: context, size: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(context.attributes.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1).minimumScaleFactor(0.65)
+                BigText(context: context)
+                    .font(.system(size: 19, weight: .semibold, design: .rounded))
+                    .lineLimit(1).minimumScaleFactor(0.55)
+                BarView(context: context, showsEnds: false, height: 2)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// 手机锁屏：完整的三层信息
+struct PhoneCard: View {
     let context: ActivityViewContext<DndActivityAttributes>
 
     var body: some View {
@@ -156,6 +192,8 @@ struct BigText: View {
 /// 一条 3px 细进度条 + 两端时刻；没有进度信息就整块隐藏
 struct BarView: View {
     let context: ActivityViewContext<DndActivityAttributes>
+    var showsEnds: Bool = true
+    var height: CGFloat = 3
 
     var body: some View {
         if context.state.progress >= 0 {
@@ -167,14 +205,16 @@ struct BarView: View {
                             .frame(width: max(2, geo.size.width * min(max(context.state.progress, 0), 1)))
                     }
                 }
-                .frame(height: 3)
-                HStack(spacing: 0) {
-                    Text(context.state.leftText)
-                    Spacer(minLength: 4)
-                    Text(context.state.rightText)
+                .frame(height: height)
+                if showsEnds {
+                    HStack(spacing: 0) {
+                        Text(context.state.leftText)
+                        Spacer(minLength: 4)
+                        Text(context.state.rightText)
+                    }
+                    .font(.system(size: 9, weight: .regular, design: .rounded))
+                    .foregroundStyle(.secondary)
                 }
-                .font(.system(size: 9, weight: .regular, design: .rounded))
-                .foregroundStyle(.secondary)
             }
         }
     }
