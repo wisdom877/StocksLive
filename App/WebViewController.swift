@@ -5,7 +5,20 @@ import UserNotifications
 import AVFoundation
 import AudioToolbox
 
-final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate, AVAudioPlayerDelegate {
+final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate, AVAudioPlayerDelegate {
+    /// 站点自己的域名：只有这些留在壳里，其余 http(s) 链接一律交给系统 Safari，否则跳出去就回不来
+    private let ownHosts: Set<String> = ["api.wisdomhqq.top", "106.53.132.252"]
+
+    private func isOwn(_ url: URL?) -> Bool {
+        guard let url = url, let host = url.host?.lowercased() else { return false }
+        return ownHosts.contains(host)
+    }
+
+    /// 用系统浏览器打开外链
+    private func openExternal(_ url: URL?) {
+        guard let url = url, let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else { return }
+        DispatchQueue.main.async { UIApplication.shared.open(url, options: [:], completionHandler: nil) }
+    }
 
     private var webView: WKWebView!
     // 优先走有证书的域名（HTTPS），证书有效，不会被 ATS 拦、也不吃运营商对 80 端口的限制
@@ -81,6 +94,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.allowsBackForwardNavigationGestures = true
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.isOpaque = false
         webView.backgroundColor = .systemBackground
         webView.scrollView.backgroundColor = .systemBackground
@@ -170,7 +184,27 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         load()
     }
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    // MARK: - WKNavigationDelegate / WKUIDelegate：外链不在壳里打开
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        let url = navigationAction.request.url
+        let scheme = url?.scheme?.lowercased() ?? ""
+        // 非本站的 http(s)：整页跳转也交给 Safari，壳留在原页面（about:blank / blob / data 这类放行）
+        if (scheme == "https" || scheme == "http") && !isOwn(url) {
+            openExternal(url)
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    /// target="_blank" / window.open 走这里；不返回新 webView，直接用 Safari 打开
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        openExternal(navigationAction.request.url)
+        return nil
+    }
         pushSafeArea()
         pushPendingAlarm()
         autoRetry = 0
@@ -336,6 +370,9 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             playTone(loop: (dict["loop"] as? Bool) ?? false)
         case "ringStop":
             stopTone()
+        case "open":
+            // 网页主动请求打开外链（如 DeepSeek 充值页）
+            if let raw = dict["url"] as? String, let u = URL(string: raw) { openExternal(u) }
         default:
             break
         }
