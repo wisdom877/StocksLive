@@ -49,56 +49,32 @@ struct DndLiveWidget: Widget {
     }
 }
 
-/// 锁屏 / 手表卡片：有倒计时就走秒表，没有就显示行情大字
+/// 锁屏 / 手表卡片：标题可折两行，倒计时或行情大字靠右，副行单独一行
 struct LockCard: View {
     let context: ActivityViewContext<DndActivityAttributes>
 
     var body: some View {
-        // 手表（small 家族）只有一百多点宽：横向排会把标题和副行全挤没，
-        // 窄了就换成竖排（标题 + 倒计时上下叠），宽屏仍是原来的横排
-        GeometryReader { geo in
-            if geo.size.width < 230 {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 4) {
-                        Image(systemName: iconName)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(tint)
-                        Text(context.attributes.title)
-                            .font(.system(size: 11, weight: .semibold))
-                            .lineLimit(1).minimumScaleFactor(0.7)
-                        Spacer(minLength: 2)
-                    }
-                    Trailing(context: context)
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
-                        .lineLimit(1).minimumScaleFactor(0.6)
-                    if !subline.isEmpty {
-                        Text(subline)
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1).minimumScaleFactor(0.7)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                HStack(spacing: 12) {
-                    Image(systemName: iconName)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(tint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(context.attributes.title).font(.footnote).fontWeight(.semibold)
-                            .lineLimit(1).minimumScaleFactor(0.8)
-                        Text(subline)
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .lineLimit(1).minimumScaleFactor(0.8)
-                    }
-                    Spacer(minLength: 4)
-                    Trailing(context: context)
-                        .font(.system(size: 22, weight: .semibold, design: .rounded))
-                        .layoutPriority(1)
-                }
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: iconName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tint)
+                Text(context.attributes.title)
+                    .font(.footnote).fontWeight(.semibold)
+                    .lineLimit(2).minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 6)
+                Trailing(context: context)
+                    .font(.system(size: 21, weight: .semibold, design: .rounded))
+                    .layoutPriority(1)
+            }
+            if !subline.isEmpty {
+                Text(subline)
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var iconName: String {
