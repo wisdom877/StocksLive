@@ -44,6 +44,7 @@ struct DndLiveWidget: Widget {
                 CountdownText(endAt: context.state.endAt).font(.caption2)
             }
         }
+        .supplementalActivityFamilies([.small, .medium])
     }
 
     private func iconName(_ kind: String) -> String {

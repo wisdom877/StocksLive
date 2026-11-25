@@ -9,6 +9,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     private let homeURL = URL(string: "https://api.wisdomhqq.top/stocks/")!
     private let fallbackURL = URL(string: "http://106.53.132.252/stocks/")!
     private var triedFallback = false
+    private var autoRetry = 0
+    private var retryTask: DispatchWorkItem?
     private var failedURL = URL(string: "https://api.wisdomhqq.top/stocks/")!
 
     /// 站点里的 dndLockSync() 只认 window.Capacitor.Plugins.DndLive；
@@ -54,7 +56,18 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         webView.scrollView.backgroundColor = .black
         view.addSubview(webView)
         addLoading()
+        NotificationCenter.default.addObserver(self, selector: #selector(onActive),
+                                               name: UIApplication.didBecomeActiveNotification, object: nil)
+        load()
+    }
 
+    @objc private func onActive() {
+        guard errorBox != nil else { return }
+        autoRetry = 0
+        triedFallback = false
+        errorBox?.removeFromSuperview()
+        errorBox = nil
+        addLoading()
         load()
     }
 
@@ -121,11 +134,13 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     @objc private func retry() {
         errorBox?.removeFromSuperview()
         errorBox = nil
+        autoRetry = 0
         addLoading()
         load()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        autoRetry = 0
         loading?.stopAnimating()
     }
 
@@ -137,6 +152,20 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         if !triedFallback {
             triedFallback = true
             load()
+            return
+        }
+        // 冷启动网络没就绪很常见：静默重试 3 轮（1s / 2s / 4s），还不行才弹卡片
+        if autoRetry < 3 {
+            autoRetry += 1
+            let delay = Double(1 << (autoRetry - 1))
+            retryTask?.cancel()
+            let task = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.triedFallback = false
+                self.load()
+            }
+            retryTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: task)
             return
         }
         showError("连接失败 \((error as NSError).domain) \((error as NSError).code)\n\(error.localizedDescription)\n\(failedURL.absoluteString)")

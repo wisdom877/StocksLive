@@ -3,14 +3,14 @@ name: StocksLive
 options:
   bundleIdPrefix: com.example
   deploymentTarget:
-    iOS: "16.1"
+    iOS: "18.0"
   createIntermediateGroups: true
   xcodeVersion: "15.0"
 
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    IPHONEOS_DEPLOYMENT_TARGET: "16.1"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
     CODE_SIGN_STYLE: Automatic
     ENABLE_BITCODE: NO
     ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -27,6 +27,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.stocks
         PRODUCT_NAME: StocksLive
         INFOPLIST_FILE: App/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
@@ -47,6 +48,7 @@ targets:
         INFOPLIST_FILE: Widget/Info.plist
         TARGETED_DEVICE_FAMILY: "1"
         SKIP_INSTALL: YES
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
 
