@@ -54,19 +54,51 @@ struct LockCard: View {
     let context: ActivityViewContext<DndActivityAttributes>
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: iconName)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(tint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(context.attributes.title).font(.footnote).fontWeight(.semibold).lineLimit(1)
-                Text(subline)
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        // 手表（small 家族）只有一百多点宽：横向排会把标题和副行全挤没，
+        // 窄了就换成竖排（标题 + 倒计时上下叠），宽屏仍是原来的横排
+        GeometryReader { geo in
+            if geo.size.width < 230 {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 4) {
+                        Image(systemName: iconName)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(tint)
+                        Text(context.attributes.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                        Spacer(minLength: 2)
+                    }
+                    Trailing(context: context)
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .lineLimit(1).minimumScaleFactor(0.6)
+                    if !subline.isEmpty {
+                        Text(subline)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(spacing: 12) {
+                    Image(systemName: iconName)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(tint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(context.attributes.title).font(.footnote).fontWeight(.semibold)
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                        Text(subline)
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                    }
+                    Spacer(minLength: 4)
+                    Trailing(context: context)
+                        .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .layoutPriority(1)
+                }
             }
-            Spacer(minLength: 6)
-            Trailing(context: context)
-                .font(.system(size: 22, weight: .semibold, design: .rounded))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
     private var iconName: String {
