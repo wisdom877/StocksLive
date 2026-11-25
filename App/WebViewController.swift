@@ -1,6 +1,7 @@
 import UIKit
 import WebKit
 import ActivityKit
+import UserNotifications
 
 final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate {
 
@@ -49,6 +50,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         let conf = WKWebViewConfiguration()
         conf.websiteDataStore = .default()          // cookie / localStorage 全部持久化，登录一次就够
         conf.userContentController.add(self, name: "dndLive")
+        conf.userContentController.add(self, name: "wkNative")
         conf.userContentController.addUserScript(
             WKUserScript(source: Self.bridgeJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
@@ -199,6 +201,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage) {
+        if message.name == "wkNative" { handleNative(message.body); return }
         guard let body = message.body as? [String: Any], let cmd = body["cmd"] as? String else { return }
         guard #available(iOS 16.1, *) else { return }
 
@@ -245,6 +248,60 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         default:
             break
         }
+    }
+
+    /// 到点提醒：网页把任务清单整批推过来，这里同步成系统本地通知（带声音、时间敏感）
+    private func handleNative(_ body: Any) {
+        guard let dict = body as? [String: Any], let cmd = dict["cmd"] as? String else { return }
+        let center = UNUserNotificationCenter.current()
+
+        switch cmd {
+        case "sync":
+            let tasks = dict["tasks"] as? [[String: Any]] ?? []
+            center.getNotificationSettings { _ in
+                center.getPendingNotificationRequests { reqs in
+                    let old = reqs.map(\.identifier).filter { $0.hasPrefix("wk-") }
+                    center.removePendingNotificationRequests(withIdentifiers: old)
+                    center.removeDeliveredNotifications(withIdentifiers: old)
+
+                    for t in tasks {
+                        guard let when = t["when"] as? String,
+                              let date = Self.localDate(when) else { continue }
+                        let rawID = (t["id"] as? String) ?? UUID().uuidString
+                        let content = UNMutableNotificationContent()
+                        content.title = (t["title"] as? String) ?? "到点提醒"
+                        content.body = (t["meta"] as? String) ?? (t["note"] as? String) ?? ""
+                        content.sound = .default
+                        content.threadIdentifier = "wk-alarm"
+                        if #available(iOS 15.0, *) { content.interruptionLevel = .timeSensitive }
+
+                        let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+                        let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+                        center.add(UNNotificationRequest(identifier: "wk-" + rawID, content: content, trigger: trigger))
+                    }
+                    DispatchQueue.main.async {
+                        self.webView.evaluateJavaScript("window.wkNativeState && window.wkNativeState(true, true, true)",
+                                                        completionHandler: nil)
+                    }
+                }
+            }
+        case "stop":
+            if let id = dict["id"] as? String, !id.isEmpty {
+                let full = "wk-" + id
+                center.removePendingNotificationRequests(withIdentifiers: [full])
+                center.removeDeliveredNotifications(withIdentifiers: [full])
+            }
+        default:
+            break
+        }
+    }
+
+    /// 页面传的是本地墙钟 "YYYY-MM-DD HH:MM"，按设备本地时区还原
+    private static func localDate(_ s: String) -> Date? {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f.date(from: String(s.prefix(16)))
     }
 
     /// 把 JS 传来的 payload 转成 Activity 的 ContentState；endAt 为 0 / 缺失表示不是倒计时
