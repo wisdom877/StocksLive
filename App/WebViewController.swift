@@ -316,6 +316,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             reportNativeState()
         case "vibe":
             AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+        case "tone":
+            playTone(loop: (dict["loop"] as? Bool) ?? false)
+        case "ringStop":
+            stopTone()
         default:
             break
         }
@@ -335,6 +339,25 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     private var standbyOn = true
+    private var tonePlayer: AVAudioPlayer?
+
+    /// 铃声交给原生播：Web Audio 在壳里经常被挂起（静音、没手势），原生播放最可靠
+    private func playTone(loop: Bool) {
+        if loop, let p = tonePlayer, p.isPlaying { return }
+        guard let url = Bundle.main.url(forResource: "alarm", withExtension: "wav") else { return }
+        try? AVAudioSession.sharedInstance().setActive(true)
+        guard let p = try? AVAudioPlayer(contentsOf: url) else { return }
+        tonePlayer?.stop()
+        p.numberOfLoops = loop ? -1 : 0
+        p.volume = 1.0
+        p.play()
+        tonePlayer = p
+    }
+
+    private func stopTone() {
+        tonePlayer?.stop()
+        tonePlayer = nil
+    }
     private var standbyPlayer: AVAudioPlayer?
 
     @objc private func enterBackground() { syncStandbyPlayer() }
