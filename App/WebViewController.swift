@@ -344,14 +344,40 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     /// 铃声交给原生播：Web Audio 在壳里经常被挂起（静音、没手势），原生播放最可靠
     private func playTone(loop: Bool) {
         if loop, let p = tonePlayer, p.isPlaying { return }
-        guard let url = Bundle.main.url(forResource: "alarm", withExtension: "wav") else { return }
-        try? AVAudioSession.sharedInstance().setActive(true)
-        guard let p = try? AVAudioPlayer(contentsOf: url) else { return }
-        tonePlayer?.stop()
-        p.numberOfLoops = loop ? -1 : 0
-        p.volume = 1.0
-        p.play()
-        tonePlayer = p
+        // WKWebView 会自己改音频会话，所以每次播之前都重新钉一遍 playback
+        let s = AVAudioSession.sharedInstance()
+        var diag = ""
+        do { try s.setCategory(.playback, mode: .default, options: [.duckOthers]) }
+        catch { diag += "cat:\(error.localizedDescription) " }
+        do { try s.setActive(true) }
+        catch { diag += "act:\(error.localizedDescription) " }
+
+        guard let url = Bundle.main.url(forResource: "alarm", withExtension: "wav") else {
+            reportTone("no-file"); return
+        }
+        do {
+            let p = try AVAudioPlayer(contentsOf: url)
+            p.numberOfLoops = loop ? -1 : 0
+            p.volume = 1.0
+            p.prepareToPlay()
+            tonePlayer?.stop()
+            let started = p.play()
+            tonePlayer = p
+            if started {
+                reportTone(diag.isEmpty ? "ok" : "ok-\(diag)")
+            } else {
+                AudioServicesPlayAlertSound(1005)   // 兜底：系统提示音
+                reportTone("play-false-\(diag)")
+            }
+        } catch {
+            AudioServicesPlayAlertSound(1005)
+            reportTone("player:\(error.localizedDescription)")
+        }
+    }
+
+    private func reportTone(_ msg: String) {
+        let js = "window.wkToneResult && window.wkToneResult(\"\(msg)\")"
+        DispatchQueue.main.async { self.webView.evaluateJavaScript(js, completionHandler: nil) }
     }
 
     private func stopTone() {
