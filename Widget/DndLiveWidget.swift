@@ -15,9 +15,9 @@ struct DndLiveWidget: Widget {
                 }
                 DynamicIslandExpandedRegion(.center) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(context.attributes.title).font(.subheadline).fontWeight(.semibold).lineLimit(1)
-                        if !context.attributes.subtitle.isEmpty {
-                            Text(context.attributes.subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        Text(dLine1(context)).font(.subheadline).fontWeight(.semibold).lineLimit(1)
+                        if !dLine2(context).isEmpty {
+                            Text(dLine2(context)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
                 }
@@ -63,7 +63,7 @@ struct WatchCard: View {
         HStack(alignment: .center, spacing: 8) {
             Leading(context: context, size: 32)
             VStack(alignment: .leading, spacing: 2) {
-                Text(context.attributes.title)
+                Text(dLine1(context))
                     .font(.system(size: 11, weight: .semibold))
                     .lineLimit(1).minimumScaleFactor(0.65)
                 BigText(context: context)
@@ -86,11 +86,11 @@ struct PhoneCard: View {
             Leading(context: context, size: 46)
             VStack(alignment: .leading, spacing: 7) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(context.attributes.title)
+                    Text(dLine1(context))
                         .font(.footnote).fontWeight(.semibold)
                         .lineLimit(1).minimumScaleFactor(0.75)
-                    if !context.attributes.subtitle.isEmpty {
-                        Text("· " + context.attributes.subtitle)
+                    if !dLine2(context).isEmpty {
+                        Text("· " + dLine2(context))
                             .font(.caption2).foregroundStyle(.secondary)
                             .lineLimit(1).minimumScaleFactor(0.7)
                     }
@@ -251,4 +251,13 @@ struct DndLiveWidgetBundle: WidgetBundle {
     var body: some Widget {
         DndLiveWidget()
     }
+}
+
+
+/// 轮播时会用 contentState 里的 line1/line2 覆盖固定标题
+func dLine1(_ c: ActivityViewContext<DndActivityAttributes>) -> String {
+    c.state.line1.isEmpty ? c.attributes.title : c.state.line1
+}
+func dLine2(_ c: ActivityViewContext<DndActivityAttributes>) -> String {
+    c.state.line2.isEmpty ? c.attributes.subtitle : c.state.line2
 }

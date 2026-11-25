@@ -431,7 +431,9 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             ringText: body["ring"] as? String ?? "",
             badge: body["badge"] as? String ?? "",
             leftText: body["left"] as? String ?? "",
-            rightText: body["right"] as? String ?? ""
+            rightText: body["right"] as? String ?? "",
+            line1: body["line1"] as? String ?? "",
+            line2: body["line2"] as? String ?? ""
         )
     }
 }

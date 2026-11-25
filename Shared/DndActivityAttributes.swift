@@ -20,10 +20,14 @@ struct DndActivityAttributes: ActivityAttributes {
         /// 底部进度条两端的小字（11:30 / 13:30）
         var leftText: String
         var rightText: String
+        /// 轮播时的标题 / 副标题覆写；空字符串表示沿用 attributes 里的固定值
+        var line1: String
+        var line2: String
 
         init(endAt: Date?, big: String = "", small: String = "", tone: Int = 0,
              progress: Double = -1, ringText: String = "", badge: String = "",
-             leftText: String = "", rightText: String = "") {
+             leftText: String = "", rightText: String = "",
+             line1: String = "", line2: String = "") {
             self.endAt = endAt
             self.big = big
             self.small = small
@@ -33,6 +37,8 @@ struct DndActivityAttributes: ActivityAttributes {
             self.badge = badge
             self.leftText = leftText
             self.rightText = rightText
+            self.line1 = line1
+            self.line2 = line2
         }
     }
     var title: String
