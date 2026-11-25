@@ -37,6 +37,11 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     })();
     """
 
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        pushSafeArea()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
@@ -143,6 +148,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        pushSafeArea()
         autoRetry = 0
         loading?.stopAnimating()
     }
@@ -179,6 +185,15 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+
+    /// 把原生安全区写进 CSS 变量：壳里 env(safe-area-inset-top) 有时取到 0，
+    /// 顶栏就会钻到状态栏/灵动岛下面；--sat 是唯一可信的物理值
+    private func pushSafeArea() {
+        let top = max(0, view.safeAreaInsets.top)
+        let bottom = max(0, view.safeAreaInsets.bottom)
+        let js = "document.documentElement.style.setProperty('--sat','\(top)px');document.documentElement.style.setProperty('--sab','\(bottom)px');"
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
 
     // MARK: - WKScriptMessageHandler
 
