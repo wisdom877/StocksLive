@@ -12,6 +12,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     private var triedFallback = false
     private var autoRetry = 0
     private var retryTask: DispatchWorkItem?
+    private var pendingAlarmID: String?
     private var failedURL = URL(string: "https://api.wisdomhqq.top/stocks/")!
 
     /// 站点里的 dndLockSync() 只认 window.Capacitor.Plugins.DndLive；
@@ -151,6 +152,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         pushSafeArea()
+        pushPendingAlarm()
         autoRetry = 0
         loading?.stopAnimating()
     }
@@ -274,6 +276,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
                         // 自带提示音（约 3 秒两拍，比系统"咚"更能听见）；找不到文件就走系统默认
                         content.sound = UNNotificationSound(named: UNNotificationSoundName("alarm.wav"))
                         content.threadIdentifier = "wk-alarm"
+                        content.userInfo = ["id": rawID]
                         if #available(iOS 15.0, *) { content.interruptionLevel = .timeSensitive }
 
                         let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
@@ -303,6 +306,20 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd HH:mm"
         return f.date(from: String(s.prefix(16)))
+    }
+
+    /// 系统通知被点开：把提醒 id 交回网页（页面可能还没加载完，先存着，didFinish 再补发）
+    func deliverAlarm(_ rawID: String) {
+        pendingAlarmID = rawID
+        pushPendingAlarm()
+    }
+
+    private func pushPendingAlarm() {
+        guard let id = pendingAlarmID, webView != nil else { return }
+        let js = "window.wkNativeAlarm && window.wkNativeAlarm(\"\(id)\")"
+        webView.evaluateJavaScript(js) { [weak self] _, err in
+            if err == nil { self?.pendingAlarmID = nil }
+        }
     }
 
     /// 把 JS 传来的 payload 转成 Activity 的 ContentState；endAt 为 0 / 缺失表示不是倒计时
