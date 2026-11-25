@@ -205,6 +205,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         openExternal(navigationAction.request.url)
         return nil
     }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         pushSafeArea()
         pushPendingAlarm()
         autoRetry = 0
