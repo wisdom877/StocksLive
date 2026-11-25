@@ -11,7 +11,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
         let window = UIWindow(frame: UIScreen.main.bounds)
         let vc = WebViewController()
         window.rootViewController = vc
-        window.backgroundColor = .black
+        window.backgroundColor = .systemBackground
         window.makeKeyAndVisible()
         self.window = window
         self.web = vc

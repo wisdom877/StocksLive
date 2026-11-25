@@ -5,7 +5,7 @@ import UserNotifications
 import AVFoundation
 import AudioToolbox
 
-final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate {
+final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate, AVAudioPlayerDelegate {
 
     private var webView: WKWebView!
     // 优先走有证书的域名（HTTPS），证书有效，不会被 ATS 拦、也不吃运营商对 80 端口的限制
@@ -53,16 +53,17 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     override func viewDidLoad() {
-        // 铃声走播放类音频会话：静音拨片拨上也能响（和系统闹钟一致）
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // 启动时**不要**激活播放类会话：以前这里 .playback + .duckOthers + setActive(true)，
+        // 一进 App 就把别的 App 的音乐压低且一直压着。平时用 ambient（不抢、不 duck），
+        // 只有真要响铃的那一刻才临时切成 playback。
+        idleAudioSession()
 
         NotificationCenter.default.addObserver(self, selector: #selector(enterBackground),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(enterForeground),
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
         super.viewDidLoad()
-        view.backgroundColor = .black
+        view.backgroundColor = .systemBackground
 
         let conf = WKWebViewConfiguration()
         conf.websiteDataStore = .default()          // cookie / localStorage 全部持久化，登录一次就够
@@ -81,8 +82,9 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         webView.allowsBackForwardNavigationGestures = true
         webView.navigationDelegate = self
         webView.isOpaque = false
-        webView.backgroundColor = .black
-        webView.scrollView.backgroundColor = .black
+        webView.backgroundColor = .systemBackground
+        webView.scrollView.backgroundColor = .systemBackground
+        webView.underPageBackgroundColor = .systemBackground
         view.addSubview(webView)
         addLoading()
         NotificationCenter.default.addObserver(self, selector: #selector(onActive),
@@ -112,7 +114,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     private func addLoading() {
         let a = UIActivityIndicatorView(style: .medium)
-        a.color = .white
+        a.color = .label
         a.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(a)
         NSLayoutConstraint.activate([
@@ -129,13 +131,13 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
         let box = UIView()
         box.translatesAutoresizingMaskIntoConstraints = false
-        box.backgroundColor = UIColor(white: 0.12, alpha: 0.95)
+        box.backgroundColor = .secondarySystemBackground
         box.layer.cornerRadius = 12
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
         label.numberOfLines = 0
-        label.textColor = .white
+        label.textColor = .label
         label.font = .systemFont(ofSize: 13)
         label.text = "页面没加载出来\n\n" + text
 
@@ -206,7 +208,21 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         showError("WebView 进程被系统回收，点重试")
     }
 
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    /// 状态栏跟着系统外观走：浅色用深字、深色用浅字（原来固定 .lightContent，浅色下顶部一片白却配白字）
+    override var preferredStatusBarStyle: UIStatusBarStyle {
+        traitCollection.userInterfaceStyle == .dark ? .lightContent : .darkContent
+    }
+
+    /// 系统切深浅色时，WebView 会把新的 prefers-color-scheme 传给页面；
+    /// 这里顺手刷新状态栏和底色，保证壳和页面同时换。
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        setNeedsStatusBarAppearanceUpdate()
+        view.backgroundColor = .systemBackground
+        webView?.backgroundColor = .systemBackground
+        webView?.scrollView.backgroundColor = .systemBackground
+    }
 
     /// 把原生安全区写进 CSS 变量：壳里 env(safe-area-inset-top) 有时取到 0，
     /// 顶栏就会钻到状态栏/灵动岛下面；--sat 是唯一可信的物理值
@@ -344,13 +360,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     /// 铃声交给原生播：Web Audio 在壳里经常被挂起（静音、没手势），原生播放最可靠
     private func playTone(loop: Bool) {
         if loop, let p = tonePlayer, p.isPlaying { return }
-        // WKWebView 会自己改音频会话，所以每次播之前都重新钉一遍 playback
-        let s = AVAudioSession.sharedInstance()
+        // 只在响铃这一刻抢会话并把别人的音乐压低；响完（见 audioPlayerDidFinishPlaying）立刻还给 ambient
         var diag = ""
-        do { try s.setCategory(.playback, mode: .default, options: [.duckOthers]) }
-        catch { diag += "cat:\(error.localizedDescription) " }
-        do { try s.setActive(true) }
-        catch { diag += "act:\(error.localizedDescription) " }
+        do { try duckAudioSession() }
+        catch { diag += "sess:\(error.localizedDescription) " }
 
         guard let url = Bundle.main.url(forResource: "alarm", withExtension: "wav") else {
             reportTone("no-file"); return
@@ -359,6 +372,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             let p = try AVAudioPlayer(contentsOf: url)
             p.numberOfLoops = loop ? -1 : 0
             p.volume = 1.0
+            p.delegate = self
             p.prepareToPlay()
             tonePlayer?.stop()
             let started = p.play()
@@ -383,6 +397,46 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     private func stopTone() {
         tonePlayer?.stop()
         tonePlayer = nil
+        restoreAudioAfterRing()
+    }
+
+    /// 铃声（非循环）自己播完了：把会话还回去，音乐音量立刻恢复
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard player === tonePlayer else { return }
+        tonePlayer = nil
+        restoreAudioAfterRing()
+    }
+
+    /// 响完收尾：后台保活还在跑就留在「playback + mix」，否则彻底退回 ambient 并解除激活
+    private func restoreAudioAfterRing() {
+        if standbyPlayer?.isPlaying == true {
+            keepAliveAudioSession()
+        } else {
+            idleAudioSession()
+        }
+    }
+
+    // MARK: - 音频会话
+
+    /// 空闲态：ambient + mix，从不激活会话，绝不压低任何人的音乐
+    private func idleAudioSession() {
+        let s = AVAudioSession.sharedInstance()
+        try? s.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+        try? s.setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+
+    /// 响铃态：这一刻才要 playback（静音拨片也能响）+ duck
+    private func duckAudioSession() throws {
+        let s = AVAudioSession.sharedInstance()
+        try s.setCategory(.playback, mode: .default, options: [.duckOthers])
+        try s.setActive(true)
+    }
+
+    /// 后台保活态：playback 但要 mixWithOthers —— 静音循环必须和别人共存，不能 duck
+    private func keepAliveAudioSession() {
+        let s = AVAudioSession.sharedInstance()
+        try? s.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try? s.setActive(true)
     }
     private var standbyPlayer: AVAudioPlayer?
 
@@ -391,10 +445,16 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     /// 后台时播一条静音循环（audio 后台模式）→ 锁屏时页面定时器还在跑，到点能自己响铃+震动
     private func syncStandbyPlayer() {
-        guard standbyOn else { standbyPlayer?.stop(); standbyPlayer = nil; return }
+        guard standbyOn else {
+            standbyPlayer?.stop(); standbyPlayer = nil
+            restoreAudioAfterRing()          // 关掉保活也要把会话还回 ambient，别一直挂着
+            return
+        }
         let bg = UIApplication.shared.applicationState == .background
         if bg, standbyPlayer == nil, let url = Bundle.main.url(forResource: "standby", withExtension: "wav") {
             if let p = try? AVAudioPlayer(contentsOf: url) {
+                // 保活音频用 mix 会话：既能在后台跑，又不会把正在听的歌压成蚊子声
+                keepAliveAudioSession()
                 p.numberOfLoops = -1
                 p.volume = 0.01          // 几乎无声，只为保活
                 p.play()
@@ -402,6 +462,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             }
         } else if !bg {
             standbyPlayer?.stop(); standbyPlayer = nil
+            restoreAudioAfterRing()
         }
     }
 
