@@ -2,7 +2,7 @@ import UIKit
 import WebKit
 import ActivityKit
 
-final class WebViewController: UIViewController, WKScriptMessageHandler {
+final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate {
 
     private var webView: WKWebView!
     private let homeURL = URL(string: "http://106.53.132.252/stocks/")!
@@ -44,13 +44,92 @@ final class WebViewController: UIViewController, WKScriptMessageHandler {
         webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.allowsBackForwardNavigationGestures = true
-        webView.navigationDelegate = nil
+        webView.navigationDelegate = self
         webView.isOpaque = false
         webView.backgroundColor = .black
         webView.scrollView.backgroundColor = .black
         view.addSubview(webView)
+        addLoading()
 
         webView.load(URLRequest(url: homeURL))
+    }
+
+    // MARK: - 载入状态（黑屏时能看见原因，不用连 Xcode）
+
+    private var loading: UIActivityIndicatorView?
+    private var errorBox: UIView?
+
+    private func addLoading() {
+        let a = UIActivityIndicatorView(style: .medium)
+        a.color = .white
+        a.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(a)
+        NSLayoutConstraint.activate([
+            a.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            a.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        ])
+        a.startAnimating()
+        loading = a
+    }
+
+    private func showError(_ text: String) {
+        loading?.stopAnimating()
+        errorBox?.removeFromSuperview()
+
+        let box = UIView()
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.backgroundColor = UIColor(white: 0.12, alpha: 0.95)
+        box.layer.cornerRadius = 12
+
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.numberOfLines = 0
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 13)
+        label.text = "页面没加载出来\n\n" + text
+
+        let btn = UIButton(type: .system)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.setTitle("重试", for: .normal)
+        btn.addTarget(self, action: #selector(retry), for: .touchUpInside)
+
+        box.addSubview(label); box.addSubview(btn)
+        view.addSubview(box)
+        NSLayoutConstraint.activate([
+            box.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+            box.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+            box.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            label.topAnchor.constraint(equalTo: box.topAnchor, constant: 14),
+            label.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 14),
+            label.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -14),
+            btn.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 10),
+            btn.centerXAnchor.constraint(equalTo: box.centerXAnchor),
+            btn.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -12)
+        ])
+        errorBox = box
+    }
+
+    @objc private func retry() {
+        errorBox?.removeFromSuperview()
+        errorBox = nil
+        addLoading()
+        webView.load(URLRequest(url: homeURL))
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loading?.stopAnimating()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        showError("错误 \((error as NSError).code)：\(error.localizedDescription)\n\(homeURL.absoluteString)")
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        showError("连接失败 \((error as NSError).domain) \((error as NSError).code)\n\(error.localizedDescription)\n\(homeURL.absoluteString)")
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        showError("WebView 进程被系统回收，点重试")
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
