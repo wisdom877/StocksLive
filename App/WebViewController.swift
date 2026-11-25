@@ -25,6 +25,9 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
           try { window.webkit.messageHandlers.dndLive.postMessage(Object.assign({ cmd: "start" }, o || {})); } catch (e) {}
           return Promise.resolve({ id: "wk" });
         },
+        update: function (o) {
+          try { window.webkit.messageHandlers.dndLive.postMessage(Object.assign({ cmd: "update" }, o || {})); } catch (e) {}
+        },
         end: function () {
           try { window.webkit.messageHandlers.dndLive.postMessage({ cmd: "end" }); } catch (e) {}
           return Promise.resolve();
@@ -186,21 +189,36 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
         switch cmd {
         case "start":
-            let title = body["title"] as? String ?? "倒计时"
-            let subtitle = body["subtitle"] as? String ?? ""
-            let kind = body["kind"] as? String ?? "task"
-            let ms = (body["endAt"] as? NSNumber)?.doubleValue ?? 0
-            let endAt = Date(timeIntervalSince1970: ms / 1000)
+            let state = contentState(from: body)
+            let attrs = DndActivityAttributes(
+                title: body["title"] as? String ?? "倒计时",
+                subtitle: body["subtitle"] as? String ?? "",
+                kind: body["kind"] as? String ?? "task"
+            )
 
             Task { @MainActor in
                 for running in Activity<DndActivityAttributes>.activities {
                     await running.end(dismissalPolicy: .immediate)
                 }
-                let attrs = DndActivityAttributes(title: title, subtitle: subtitle, kind: kind)
-                let state = DndActivityAttributes.ContentState(endAt: endAt)
                 if let act = try? Activity.request(attributes: attrs, contentState: state, pushType: nil) {
-                    // 到点后再留 5 分钟，由系统收走；App 被杀也生效
-                    await act.end(dismissalPolicy: .after(endAt.addingTimeInterval(300)))
+                    // 有截止时刻的：到点后再留 5 分钟由系统收走；行情类挂 8 小时
+                    if let endAt = state.endAt {
+                        await act.end(dismissalPolicy: .after(endAt.addingTimeInterval(300)))
+                    } else {
+                        await act.end(dismissalPolicy: .after(Date().addingTimeInterval(8 * 3600)))
+                    }
+                }
+            }
+        case "update":
+            let state = contentState(from: body)
+            let kind = body["kind"] as? String
+
+            Task { @MainActor in
+                for running in Activity<DndActivityAttributes>.activities {
+                    if kind == nil || running.attributes.kind == kind {
+                        await running.update(using: state)
+                        break
+                    }
                 }
             }
         case "end":
@@ -212,5 +230,16 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         default:
             break
         }
+    }
+
+    /// 把 JS 传来的 payload 转成 Activity 的 ContentState；endAt 为 0 / 缺失表示不是倒计时
+    private func contentState(from body: [String: Any]) -> DndActivityAttributes.ContentState {
+        let ms = (body["endAt"] as? NSNumber)?.doubleValue ?? 0
+        return DndActivityAttributes.ContentState(
+            endAt: ms > 0 ? Date(timeIntervalSince1970: ms / 1000) : nil,
+            big: body["big"] as? String ?? "",
+            small: body["small"] as? String ?? "",
+            tone: (body["tone"] as? NSNumber)?.intValue ?? 0
+        )
     }
 }
