@@ -2,6 +2,8 @@ import UIKit
 import WebKit
 import ActivityKit
 import UserNotifications
+import AVFoundation
+import AudioToolbox
 
 final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate {
 
@@ -22,6 +24,12 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
       if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.dndLive) return;
       window.Capacitor = window.Capacitor || {};
       window.Capacitor.Plugins = window.Capacitor.Plugins || {};
+      if (!navigator.vibrate) {
+        navigator.vibrate = function () {
+          try { window.webkit.messageHandlers.wkNative.postMessage({ cmd: "vibe" }); } catch (e) {}
+          return true;
+        };
+      }
       window.Capacitor.Plugins.DndLive = {
         start: function (o) {
           try { window.webkit.messageHandlers.dndLive.postMessage(Object.assign({ cmd: "start" }, o || {})); } catch (e) {}
@@ -45,11 +53,21 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     override func viewDidLoad() {
+        // 铃声走播放类音频会话：静音拨片拨上也能响（和系统闹钟一致）
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+
+        NotificationCenter.default.addObserver(self, selector: #selector(enterBackground),
+                                               name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(enterForeground),
+                                               name: UIApplication.willEnterForegroundNotification, object: nil)
         super.viewDidLoad()
         view.backgroundColor = .black
 
         let conf = WKWebViewConfiguration()
         conf.websiteDataStore = .default()          // cookie / localStorage 全部持久化，登录一次就够
+        conf.mediaTypesRequiringUserActionForPlayback = []   // 到点自动响铃，不用先点一下页面
+        conf.allowsInlineMediaPlayback = true
         conf.userContentController.add(self, name: "dndLive")
         conf.userContentController.add(self, name: "wkNative")
         conf.userContentController.addUserScript(
@@ -283,10 +301,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
                         let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
                         center.add(UNNotificationRequest(identifier: "wk-" + rawID, content: content, trigger: trigger))
                     }
-                    DispatchQueue.main.async {
-                        self.webView.evaluateJavaScript("window.wkNativeState && window.wkNativeState(true, true, true)",
-                                                        completionHandler: nil)
-                    }
+                    DispatchQueue.main.async { self.reportNativeState() }
                 }
             }
         case "stop":
@@ -295,9 +310,20 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
                 center.removePendingNotificationRequests(withIdentifiers: [full])
                 center.removeDeliveredNotifications(withIdentifiers: [full])
             }
+        case "standby":
+            standbyOn = (dict["on"] as? Bool) ?? true
+            syncStandbyPlayer()
+            reportNativeState()
+        case "vibe":
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
         default:
             break
         }
+    }
+
+    private func reportNativeState() {
+        let js = "window.wkNativeState && window.wkNativeState(true, true, \(standbyOn))"
+        DispatchQueue.main.async { self.webView.evaluateJavaScript(js, completionHandler: nil) }
     }
 
     /// 页面传的是本地墙钟 "YYYY-MM-DD HH:MM"，按设备本地时区还原
@@ -306,6 +332,28 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd HH:mm"
         return f.date(from: String(s.prefix(16)))
+    }
+
+    private var standbyOn = true
+    private var standbyPlayer: AVAudioPlayer?
+
+    @objc private func enterBackground() { syncStandbyPlayer() }
+    @objc private func enterForeground() { syncStandbyPlayer() }
+
+    /// 后台时播一条静音循环（audio 后台模式）→ 锁屏时页面定时器还在跑，到点能自己响铃+震动
+    private func syncStandbyPlayer() {
+        guard standbyOn else { standbyPlayer?.stop(); standbyPlayer = nil; return }
+        let bg = UIApplication.shared.applicationState == .background
+        if bg, standbyPlayer == nil, let url = Bundle.main.url(forResource: "standby", withExtension: "wav") {
+            if let p = try? AVAudioPlayer(contentsOf: url) {
+                p.numberOfLoops = -1
+                p.volume = 0.01          // 几乎无声，只为保活
+                p.play()
+                standbyPlayer = p
+            }
+        } else if !bg {
+            standbyPlayer?.stop(); standbyPlayer = nil
+        }
     }
 
     /// 系统通知被点开：把提醒 id 交回网页（页面可能还没加载完，先存着，didFinish 再补发）
