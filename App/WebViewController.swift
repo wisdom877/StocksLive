@@ -367,8 +367,13 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             syncStandbyPlayer()
             reportNativeState()
         case "vibe":
-            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+            if (dict["stop"] as? Bool) == true { return }
+            vibrate()
         case "tone":
+            playTone(loop: (dict["loop"] as? Bool) ?? false)
+        case "ring":
+            // 弹消息一条消息搞定：先震再响，网页不用发两次、也不会因为中间报错只响不震
+            vibrate()
             playTone(loop: (dict["loop"] as? Bool) ?? false)
         case "ringStop":
             stopTone()
@@ -464,11 +469,21 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         try? s.setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
-    /// 响铃态：这一刻才要 playback（静音拨片也能响）+ duck
+    /// 响铃态：用 ambient 而不是 playback —— 这样系统静音拨片一拨就真的不响，
+    /// 只有非静音（响铃）时才出声；同时 mixWithOthers 不压低别人的音乐。
+    /// 震动不受静音开关影响，静音时照样震，所以「非静音=震动+铃声」「静音=只震动」。
     private func duckAudioSession() throws {
         let s = AVAudioSession.sharedInstance()
-        try s.setCategory(.playback, mode: .default, options: [.duckOthers])
+        try s.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
         try s.setActive(true)
+    }
+
+    /// 弹消息的震动：先给一记明确的触感，再叠系统长震，比只调其中一个更容易被感知
+    private func vibrate() {
+        let gen = UINotificationFeedbackGenerator()
+        gen.prepare()
+        gen.notificationOccurred(.warning)
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
     }
 
     /// 后台保活态：playback 但要 mixWithOthers —— 静音循环必须和别人共存，不能 duck
