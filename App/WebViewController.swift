@@ -5,7 +5,11 @@ import ActivityKit
 final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate {
 
     private var webView: WKWebView!
-    private let homeURL = URL(string: "http://106.53.132.252/stocks/")!
+    // 优先走有证书的域名（HTTPS），证书有效，不会被 ATS 拦、也不吃运营商对 80 端口的限制
+    private let homeURL = URL(string: "https://api.wisdomhqq.top/stocks/")!
+    private let fallbackURL = URL(string: "http://106.53.132.252/stocks/")!
+    private var triedFallback = false
+    private var failedURL = URL(string: "https://api.wisdomhqq.top/stocks/")!
 
     /// 站点里的 dndLockSync() 只认 window.Capacitor.Plugins.DndLive；
     /// 这里在文档开始前塞一个同名 shim，把调用转成 WK 消息，网页代码一行不用改。
@@ -51,7 +55,12 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         view.addSubview(webView)
         addLoading()
 
-        webView.load(URLRequest(url: homeURL))
+        load()
+    }
+
+    private func load() {
+        failedURL = triedFallback ? fallbackURL : homeURL
+        webView.load(URLRequest(url: failedURL))
     }
 
     // MARK: - 载入状态（黑屏时能看见原因，不用连 Xcode）
@@ -113,7 +122,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         errorBox?.removeFromSuperview()
         errorBox = nil
         addLoading()
-        webView.load(URLRequest(url: homeURL))
+        load()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -121,11 +130,16 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        showError("错误 \((error as NSError).code)：\(error.localizedDescription)\n\(homeURL.absoluteString)")
+        showError("错误 \((error as NSError).code)：\(error.localizedDescription)\n\(failedURL.absoluteString)")
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        showError("连接失败 \((error as NSError).domain) \((error as NSError).code)\n\(error.localizedDescription)\n\(homeURL.absoluteString)")
+        if !triedFallback {
+            triedFallback = true
+            load()
+            return
+        }
+        showError("连接失败 \((error as NSError).domain) \((error as NSError).code)\n\(error.localizedDescription)\n\(failedURL.absoluteString)")
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
