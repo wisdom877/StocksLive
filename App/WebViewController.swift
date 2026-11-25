@@ -271,7 +271,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
                         let content = UNMutableNotificationContent()
                         content.title = (t["title"] as? String) ?? "到点提醒"
                         content.body = (t["meta"] as? String) ?? (t["note"] as? String) ?? ""
-                        content.sound = .default
+                        // 自带提示音（约 3 秒两拍，比系统"咚"更能听见）；找不到文件就走系统默认
+                        content.sound = UNNotificationSound(named: UNNotificationSoundName("alarm.wav"))
                         content.threadIdentifier = "wk-alarm"
                         if #available(iOS 15.0, *) { content.interruptionLevel = .timeSensitive }
 
