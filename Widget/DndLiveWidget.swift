@@ -5,123 +5,194 @@ struct DndLiveWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DndActivityAttributes.self) { context in
             LockCard(context: context)
-                .padding(.horizontal, 14).padding(.vertical, 12)
+                .padding(.horizontal, 16).padding(.vertical, 14)
                 .activityBackgroundTint(Color.black.opacity(0.55))
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Image(systemName: iconName(context.attributes.kind))
-                        .font(.system(size: 16, weight: .semibold))
+                    Leading(context: context, size: 30)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text(context.attributes.title).font(.subheadline).fontWeight(.semibold).lineLimit(1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(context.attributes.title).font(.subheadline).fontWeight(.semibold).lineLimit(1)
+                        if !context.attributes.subtitle.isEmpty {
+                            Text(context.attributes.subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Trailing(context: context).font(.title3)
+                    BigText(context: context).font(.title3)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(footnote(context)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    BarView(context: context)
                 }
             } compactLeading: {
-                Image(systemName: iconName(context.attributes.kind)).font(.caption)
+                CompactLeading(context: context)
             } compactTrailing: {
-                Trailing(context: context).font(.caption).frame(maxWidth: 56)
+                BigText(context: context).font(.caption).frame(maxWidth: 56)
             } minimal: {
-                Trailing(context: context).font(.caption2)
+                BigText(context: context).font(.caption2)
             }
         }
         .supplementalActivityFamilies([.small, .medium])
     }
-
-    private func footnote(_ context: ActivityViewContext<DndActivityAttributes>) -> String {
-        if context.state.endAt != nil { return context.attributes.subtitle.isEmpty ? " " : context.attributes.subtitle }
-        return context.state.small.isEmpty ? (context.attributes.subtitle.isEmpty ? " " : context.attributes.subtitle) : context.state.small
-    }
-
-    private func iconName(_ kind: String) -> String {
-        switch kind {
-        case "focus": return "brain.head.profile"
-        case "shift": return "briefcase.fill"
-        case "market": return "chart.line.uptrend.xyaxis"
-        default: return "moon.fill"
-        }
-    }
 }
 
-/// 锁屏 / 手表卡片：标题可折两行，倒计时或行情大字靠右，副行单独一行
+// MARK: - 锁屏卡
+
+/// 一层标题 + 一个巨大倒计时 + 一条细进度条；左侧环形表示步骤进度，行情态换成折线图标
 struct LockCard: View {
     let context: ActivityViewContext<DndActivityAttributes>
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: iconName)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(tint)
-                Text(context.attributes.title)
-                    .font(.footnote).fontWeight(.semibold)
-                    .lineLimit(2).minimumScaleFactor(0.8)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 6)
-                Trailing(context: context)
-                    .font(.system(size: 21, weight: .semibold, design: .rounded))
-                    .layoutPriority(1)
-            }
-            if !subline.isEmpty {
-                Text(subline)
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .center, spacing: 14) {
+            Leading(context: context, size: 46)
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(context.attributes.title)
+                        .font(.footnote).fontWeight(.semibold)
+                        .lineLimit(1).minimumScaleFactor(0.75)
+                    if !context.attributes.subtitle.isEmpty {
+                        Text("· " + context.attributes.subtitle)
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                    }
+                    Spacer(minLength: 6)
+                    if !context.state.badge.isEmpty {
+                        Badge(text: context.state.badge, tone: context.state.tone)
+                    }
+                }
+                BigText(context: context)
+                    .font(.system(size: 30, weight: .semibold, design: .rounded))
+                    .lineLimit(1).minimumScaleFactor(0.55)
+                BarView(context: context)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
 
-    private var iconName: String {
-        switch context.attributes.kind {
-        case "focus": return "brain.head.profile"
-        case "shift": return "briefcase.fill"
-        case "market": return "chart.line.uptrend.xyaxis"
-        default: return "moon.fill"
-        }
+// MARK: - 组件
+
+private func toneColor(_ tone: Int) -> Color {
+    switch tone {
+    case 1: return Color(red: 1.0, green: 0.32, blue: 0.32)
+    case -1: return Color(red: 0.2, green: 0.82, blue: 0.45)
+    case 2: return Color(red: 1.0, green: 0.35, blue: 0.35)
+    default: return .white
     }
+}
 
-    private var subline: String {
-        if context.state.endAt != nil { return context.attributes.subtitle }
-        return context.state.small
+private func iconName(_ kind: String) -> String {
+    switch kind {
+    case "focus": return "brain.head.profile"
+    case "shift": return "briefcase.fill"
+    case "market": return "chart.line.uptrend.xyaxis"
+    default: return "moon.fill"
     }
+}
 
-    private var tint: Color {
-        switch context.state.tone {
-        case 1: return Color(red: 1.0, green: 0.32, blue: 0.32)
-        case -1: return Color(red: 0.2, green: 0.82, blue: 0.45)
-        default: return .white
+/// 左侧：有环形进度就画环（环里写 2/3），否则画图标
+struct Leading: View {
+    let context: ActivityViewContext<DndActivityAttributes>
+    let size: CGFloat
+
+    var body: some View {
+        if context.state.progress >= 0 && !context.state.ringText.isEmpty {
+            ZStack {
+                Circle().stroke(Color.white.opacity(0.18), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: min(max(context.state.progress, 0.02), 1))
+                    .stroke(toneColor(context.state.tone), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text(context.state.ringText)
+                    .font(.system(size: size * 0.26, weight: .semibold, design: .rounded))
+                    .minimumScaleFactor(0.6)
+            }
+            .frame(width: size, height: size)
+        } else {
+            Image(systemName: iconName(context.attributes.kind))
+                .font(.system(size: size * 0.55, weight: .semibold))
+                .foregroundStyle(toneColor(context.state.tone))
+                .frame(width: size, height: size)
         }
     }
 }
 
-/// 有 endAt → 系统自己走秒；否则显示行情大字（带涨跌色）
-struct Trailing: View {
+struct CompactLeading: View {
+    let context: ActivityViewContext<DndActivityAttributes>
+
+    var body: some View {
+        if context.state.progress >= 0 && !context.state.ringText.isEmpty {
+            Image(systemName: "circle.dashed")
+                .font(.caption)
+                .foregroundStyle(toneColor(context.state.tone))
+        } else {
+            Image(systemName: iconName(context.attributes.kind))
+                .font(.caption)
+                .foregroundStyle(toneColor(context.state.tone))
+        }
+    }
+}
+
+/// 有 endAt 让系统自己走秒；否则显示大字（行情点位 / 已超时）
+struct BigText: View {
     let context: ActivityViewContext<DndActivityAttributes>
 
     var body: some View {
         if let endAt = context.state.endAt {
-            CountdownText(endAt: endAt)
+            CountdownText(endAt: endAt).monospacedDigit()
         } else {
             Text(context.state.big.isEmpty ? "—" : context.state.big)
                 .monospacedDigit()
-                .foregroundStyle(toneColor)
+                .foregroundStyle(toneColor(context.state.tone))
                 .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                .minimumScaleFactor(0.5)
         }
     }
+}
 
-    private var toneColor: Color {
-        switch context.state.tone {
-        case 1: return Color(red: 1.0, green: 0.32, blue: 0.32)
-        case -1: return Color(red: 0.2, green: 0.82, blue: 0.45)
-        default: return .primary
+/// 一条 3px 细进度条 + 两端时刻；没有进度信息就整块隐藏
+struct BarView: View {
+    let context: ActivityViewContext<DndActivityAttributes>
+
+    var body: some View {
+        if context.state.progress >= 0 {
+            VStack(alignment: .leading, spacing: 3) {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.16))
+                        Capsule().fill(toneColor(context.state.tone))
+                            .frame(width: max(2, geo.size.width * min(max(context.state.progress, 0), 1)))
+                    }
+                }
+                .frame(height: 3)
+                HStack(spacing: 0) {
+                    Text(context.state.leftText)
+                    Spacer(minLength: 4)
+                    Text(context.state.rightText)
+                }
+                .font(.system(size: 9, weight: .regular, design: .rounded))
+                .foregroundStyle(.secondary)
+            }
         }
+    }
+}
+
+struct Badge: View {
+    let text: String
+    let tone: Int
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .medium, design: .rounded))
+            .lineLimit(1)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(
+                Capsule().fill(toneColor(tone).opacity(tone == 0 ? 0.14 : 0.9))
+            )
+            .foregroundStyle(tone == 0 ? Color.white.opacity(0.75) : Color.white)
     }
 }
 
@@ -132,7 +203,6 @@ struct CountdownText: View {
     var body: some View {
         let end = max(endAt, Date().addingTimeInterval(1))
         return Text(timerInterval: Date()...end, countsDown: true)
-            .monospacedDigit()
     }
 }
 

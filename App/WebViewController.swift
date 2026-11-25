@@ -426,7 +426,12 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             endAt: ms > 0 ? Date(timeIntervalSince1970: ms / 1000) : nil,
             big: body["big"] as? String ?? "",
             small: body["small"] as? String ?? "",
-            tone: (body["tone"] as? NSNumber)?.intValue ?? 0
+            tone: (body["tone"] as? NSNumber)?.intValue ?? 0,
+            progress: (body["progress"] as? NSNumber)?.doubleValue ?? -1,
+            ringText: body["ring"] as? String ?? "",
+            badge: body["badge"] as? String ?? "",
+            leftText: body["left"] as? String ?? "",
+            rightText: body["right"] as? String ?? ""
         )
     }
 }
