@@ -131,6 +131,7 @@ final class HealthBridge: NSObject {
     // MARK: - 今日汇总
 
     private func pushSnapshot() {
+        guard HKHealthStore.isHealthDataAvailable() else { return }
         var metrics: [String: Double] = [:]
         let group = DispatchGroup()
 
@@ -185,11 +186,11 @@ final class HealthBridge: NSObject {
         latest(.bloodGlucose, "glucose", .gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci)))
         latest(.walkingSpeed, "walking_speed", .meterUnit(with: .none).unitDivided(by: .second()))
 
+        if let standType = HKObjectType.categoryType(forIdentifier: .appleStandHour) {
         group.enter()
-        let standType = HKObjectType.categoryType(forIdentifier: .appleStandHour)
         let standPredicate = HKQuery.predicateForSamples(withStart: Calendar.current.startOfDay(for: Date()),
                                                           end: Date(), options: .strictStartDate)
-        let standQuery = HKSampleQuery(sampleType: standType!, predicate: standPredicate, limit: 200,
+        let standQuery = HKSampleQuery(sampleType: standType, predicate: standPredicate, limit: 200,
                                        sortDescriptors: nil) { _, samples, _ in
             let stood = (samples as? [HKCategorySample])?.filter {
                 $0.value == HKCategoryValueAppleStandHour.stood.rawValue
@@ -198,9 +199,10 @@ final class HealthBridge: NSObject {
             group.leave()
         }
         store.execute(standQuery)
+        }
 
+        if let sleepType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) {
         group.enter()
-        let sleepType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis)!
         let sleepPredicate = HKQuery.predicateForSamples(withStart: Calendar.current.startOfDay(for: Date()).addingTimeInterval(-6 * 3600),
                                                           end: Date(), options: .strictStartDate)
         let sleepQuery = HKSampleQuery(sampleType: sleepType, predicate: sleepPredicate, limit: 200,
@@ -215,6 +217,7 @@ final class HealthBridge: NSObject {
             group.leave()
         }
         store.execute(sleepQuery)
+        }
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }

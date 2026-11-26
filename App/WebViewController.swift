@@ -214,8 +214,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         pushPendingAlarm()
         autoRetry = 0
         loading?.stopAnimating()
-        // 第一次进页面就把健康权限问一遍；用户拒了也只是没数据，待机会显示「未接入」
-        HealthBridge.shared.start()
+        // 健康权限不在启动时问：没带 HealthKit 能力的签名会让 requestAuthorization 直接失败，
+        // 放在用户主动点「开启健康数据」时再试，启动永远不受影响。
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
