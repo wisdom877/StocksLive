@@ -1,7 +1,6 @@
 import Foundation
 import HealthKit
 import WebKit
-import Security
 
 /// 把 HealthKit 里的训练相关数据喂给网页：心率实时推，其余指标每分钟汇总一次。
 /// 网页在 iOS 里读不到健康数据，只能靠壳这边授权、查询、再 evaluateJavaScript 送进去。
@@ -93,14 +92,13 @@ final class HealthBridge: NSObject {
         }
     }
 
-    /// 读当前进程签名里的 com.apple.developer.healthkit
+    /// 看签名用的描述文件里有没有 HealthKit 能力。
+    /// 没有就不要去 requestAuthorization——那次调用缺能力时会把进程直接终止，表现为闪退。
     private func hasHealthEntitlement() -> Bool {
-        guard let task = SecTaskCreateFromSelf(nil) else { return false }
-        let val = SecTaskCopyValueForEntitlement(task, "com.apple.developer.healthkit" as CFString, nil)
-        if let b = val as? Bool { return b }
-        if let n = val as? NSNumber { return n.boolValue }
-        if let arr = val as? [Any] { return !arr.isEmpty }
-        return false
+        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url) else { return false }
+        let text = String(decoding: data, as: UTF8.self)
+        return text.contains("com.apple.developer.healthkit")
     }
 
     private static func describe(_ err: Error?) -> String? {
