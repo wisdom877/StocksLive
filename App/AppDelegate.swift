@@ -17,6 +17,11 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
     func setLandscape(_ on: Bool) {
         guard lockLandscape != on else { return }
         lockLandscape = on
+        // 连打两拍：iOS 16 上有时第一拍 geometry 请求会被正在进行的布局吃掉，第二次才真转
+        applyLandscape(on, retry: true)
+    }
+
+    private func applyLandscape(_ on: Bool, retry: Bool) {
         DispatchQueue.main.async {
             guard let win = self.window else { return }
             let want: UIInterfaceOrientationMask = on ? .landscapeRight : .portrait
@@ -34,6 +39,11 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
                                       forKey: "orientation")
             UIViewController.attemptRotationToDeviceOrientation()
             win.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        }
+        if retry {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) { [weak self] in
+                self?.applyLandscape(on, retry: false)
+            }
         }
     }
 
