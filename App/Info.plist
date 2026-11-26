@@ -31,7 +31,9 @@
 	</dict>
 		<key>NSBluetoothAlwaysUsageDescription</key>
 		<string>连接蓝牙心率设备（心率带 / 手表广播的心率）以便在待机屏实时显示心率</string>
-		<key>NSHealthShareUsageDescription</key>
+		<key>NSAppleMusicUsageDescription</key>
+	<string>读取当前正在播放的曲目信息，用来在应用里显示播放器和歌词。</string>
+	<key>NSHealthShareUsageDescription</key>
 	<string>读取心率、活动能量、步数、睡眠等训练数据，用于待机页与体能训练页展示，不上传给药疗用途。</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>本应用不写入健康数据，仅在你授权后读取。</string>

@@ -104,6 +104,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         view.addSubview(webView)
         HealthBridge.shared.attach(webView)
         BleHeart.shared.attach(webView)   // 蓝牙心率：手表/心率带广播的标准心率服务
+        MusicNow.shared.attach(webView)   // 正在播放：镜像系统「音乐」App（不碰 DRM）
         // 待机右上角要显示电量。网页没有任何电池 API，只能由壳读 UIDevice 再推下去。
         UIDevice.current.isBatteryMonitoringEnabled = true
         for name in [UIDevice.batteryLevelDidChangeNotification, UIDevice.batteryStateDidChangeNotification] {
@@ -358,6 +359,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             HealthBridge.shared.start()
         case "batt":
             pushBattery()
+        case "music":
+            MusicNow.shared.command(dict)
         case "orient":
             // 待机固定横屏、应用固定竖屏。由网页在 sbOpen/sbClose 时通知
             let on = (dict["on"] as? Int) ?? ((dict["on"] as? Bool) == true ? 1 : 0)
