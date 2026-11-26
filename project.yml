@@ -35,6 +35,7 @@ targets:
       - target: DndLiveWidget
         embed: true
       - sdk: HealthKit.framework
+      - sdk: CoreBluetooth.framework
 
   DndLiveWidget:
     type: app-extension
