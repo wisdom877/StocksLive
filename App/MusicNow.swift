@@ -211,14 +211,14 @@ final class MusicNow: NSObject {
         let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
         guard let pl = lists.first(where: { $0.persistentID == pid }) else { return }
         let items = pl.items
-        guard let start = items.first(where: { $0.persistentID == tid }) ?? items.first else { return }
+        guard let startItem = items.first(where: { $0.persistentID == tid }) ?? items.first else { return }
         system.pause()
         let s = AVAudioSession.sharedInstance()
         try? s.setCategory(.playback, mode: .default, options: [])
         try? s.setActive(true)
         useQueue = true
         queue.setQueue(with: MPMediaItemCollection(items: items))
-        queue.nowPlayingItem = start
+        queue.nowPlayingItem = startItem
         queue.play()
         lastArtKey = ""
         start()
