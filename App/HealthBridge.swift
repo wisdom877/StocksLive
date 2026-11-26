@@ -35,7 +35,7 @@ final class HealthBridge: NSObject {
         q(.appleExerciseTime); q(.pushCount); q(.numberOfTimesFallen); q(.swimmingStrokeCount)
         // 体能
         q(.vo2Max); q(.sixMinuteWalkTestDistance); q(.walkingSpeed); q(.walkingStepLength)
-        q(.stairAscendSpeed); q(.stairDescentSpeed)
+        q(.stairAscentSpeed); q(.stairDescentSpeed)
         // 呼吸 / 血氧 / 体温 / 血压 / 血糖
         q(.respiratoryRate); q(.oxygenSaturation)
         q(.bodyTemperature); q(.basalBodyTemperature)
