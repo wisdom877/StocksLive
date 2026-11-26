@@ -29,7 +29,11 @@
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
 	</dict>
-	<key>NSSupportsLiveActivities</key>
+		<key>NSHealthShareUsageDescription</key>
+	<string>读取心率、活动能量、步数、睡眠等训练数据，用于待机页与体能训练页展示，不上传给药疗用途。</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>本应用不写入健康数据，仅在你授权后读取。</string>
+<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
 	<true/>

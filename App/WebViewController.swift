@@ -102,6 +102,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         webView.scrollView.backgroundColor = .systemBackground
         webView.underPageBackgroundColor = .systemBackground
         view.addSubview(webView)
+        HealthBridge.shared.attach(webView)
         addLoading()
         NotificationCenter.default.addObserver(self, selector: #selector(onActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
@@ -213,6 +214,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         pushPendingAlarm()
         autoRetry = 0
         loading?.stopAnimating()
+        // 第一次进页面就把健康权限问一遍；用户拒了也只是没数据，待机会显示「未接入」
+        HealthBridge.shared.start()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -333,6 +336,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         case "sync":
             let tasks = dict["tasks"] as? [[String: Any]] ?? []
             syncAlarms(tasks)
+        case "health":
+            HealthBridge.shared.start()
         case "awake":
             // 待机页右上角呼吸点涨到最大时打过来一次：打开/关掉系统的自动锁屏。
             // 网页侧拦不住 iOS 的自动暗屏，只有这里把 isIdleTimerDisabled 打开才真正常亮。
