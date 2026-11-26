@@ -22,7 +22,7 @@ struct DndLiveWidget: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    BigText(context: context).font(.title3)
+                    BigText(context: context).font(.title3).lineLimit(1).minimumScaleFactor(0.6)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     BarView(context: context)
@@ -30,7 +30,7 @@ struct DndLiveWidget: Widget {
             } compactLeading: {
                 CompactLeading(context: context)
             } compactTrailing: {
-                BigText(context: context).font(.caption).frame(maxWidth: 56)
+                BigText(context: context).font(.caption).lineLimit(1).minimumScaleFactor(0.6).frame(maxWidth: 56)
             } minimal: {
                 BigText(context: context).font(.caption2)
             }
@@ -77,31 +77,40 @@ struct WatchCard: View {
     }
 }
 
-/// 手机锁屏：完整的三层信息
+/// 手机锁屏：标题一行（角标靠右）→ 大字 + 时间范围同一行 → 一条细进度条
 struct PhoneCard: View {
     let context: ActivityViewContext<DndActivityAttributes>
 
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Leading(context: context, size: 46)
-            VStack(alignment: .leading, spacing: 7) {
+        HStack(alignment: .center, spacing: 12) {
+            Leading(context: context, size: 40)
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(dLine1(context))
                         .font(.footnote).fontWeight(.semibold)
                         .lineLimit(1).minimumScaleFactor(0.75)
-                    if !dLine2(context).isEmpty {
+                    // 有进度环的（专注）副标题很短，跟在标题后面；没有进度条的（待办）放到大字右边
+                    if context.state.progress >= 0 && !dLine2(context).isEmpty {
                         Text("· " + dLine2(context))
                             .font(.caption2).foregroundStyle(.secondary)
                             .lineLimit(1).minimumScaleFactor(0.7)
                     }
-                    Spacer(minLength: 6)
+                    Spacer(minLength: 8)
                     if !context.state.badge.isEmpty {
                         Badge(text: context.state.badge, tone: context.state.tone)
                     }
                 }
-                BigText(context: context)
-                    .font(.system(size: 30, weight: .semibold, design: .rounded))
-                    .lineLimit(1).minimumScaleFactor(0.55)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    BigText(context: context)
+                        .font(.system(size: 32, weight: .semibold, design: .rounded))
+                        .lineLimit(1).minimumScaleFactor(0.55)
+                    if context.state.progress < 0 && !dLine2(context).isEmpty {
+                        Spacer(minLength: 8)
+                        Text(dLine2(context))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                    }
+                }
                 BarView(context: context)
             }
         }
@@ -172,21 +181,37 @@ struct CompactLeading: View {
     }
 }
 
-/// 有 endAt 让系统自己走秒；否则显示大字（行情点位 / 已超时）
+/// 优先级：写了 big（该做了 / 已超时 / 行情点位）→ 显示 big；
+/// 否则有 endAt：还早（> 90 分钟）按分钟显示「X 小时 Y 分」，临近了交给系统逐秒倒计时
 struct BigText: View {
     let context: ActivityViewContext<DndActivityAttributes>
 
     var body: some View {
-        if let endAt = context.state.endAt {
-            CountdownText(endAt: endAt).monospacedDigit()
-        } else {
-            Text(context.state.big.isEmpty ? "—" : context.state.big)
+        if !context.state.big.isEmpty {
+            Text(context.state.big)
                 .monospacedDigit()
                 .foregroundStyle(toneColor(context.state.tone))
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
+        } else if let endAt = context.state.endAt {
+            if endAt.timeIntervalSinceNow > 90 * 60 {
+                TimelineView(.periodic(from: .now, by: 60)) { _ in
+                    Text(coarseRemaining(endAt)).monospacedDigit()
+                }
+            } else {
+                CountdownText(endAt: endAt).monospacedDigit()
+            }
+        } else {
+            Text("—").monospacedDigit()
         }
     }
+}
+
+private func coarseRemaining(_ endAt: Date) -> String {
+    let m = max(0, Int((endAt.timeIntervalSinceNow / 60).rounded(.up)))
+    if m >= 60 { return "\(m / 60) 小时 \(m % 60) 分" }
+    if m >= 1 { return "\(m) 分钟" }
+    return "不到 1 分钟"
 }
 
 /// 一条 3px 细进度条 + 两端时刻；没有进度信息就整块隐藏
@@ -226,13 +251,10 @@ struct Badge: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 10, weight: .medium, design: .rounded))
+            .font(.system(size: 11, weight: .medium, design: .rounded))
             .lineLimit(1)
-            .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(
-                Capsule().fill(toneColor(tone).opacity(tone == 0 ? 0.14 : 0.9))
-            )
-            .foregroundStyle(tone == 0 ? Color.white.opacity(0.75) : Color.white)
+            .minimumScaleFactor(0.7)
+            .foregroundStyle(tone == 0 ? Color.secondary : toneColor(tone))
     }
 }
 

@@ -37,6 +37,32 @@ test -d "$APP"
 rm -rf build/Payload
 mkdir -p build/Payload
 cp -R "$APP" build/Payload/
+
+# 手表上（锁屏卡的镜像、表盘列表）取图标走的是包根目录的传统尺寸 PNG + CFBundleIcons，
+# Xcode 15 起默认只导出 60x60@2x 一个，手表拿不到就显示通用网格图标。
+# 这里把 29 / 40 / 60 三档补到包根目录，并写进 Info.plist（Assets.car 原样保留，手机桌面不受影响）
+BUNDLE="build/Payload/StocksLive.app"
+ICONS="App/Assets.xcassets/AppIcon.appiconset"
+for pair in \
+  "icon-29-29@2x.png:AppIcon29x29@2x.png" \
+  "icon-29-29@3x.png:AppIcon29x29@3x.png" \
+  "icon-40-40@2x.png:AppIcon40x40@2x.png" \
+  "icon-40-40@3x.png:AppIcon40x40@3x.png" \
+  "icon-60-60@2x.png:AppIcon60x60@2x.png" \
+  "icon-60-60@3x.png:AppIcon60x60@3x.png"; do
+  cp -f "$ICONS/${pair%%:*}" "$BUNDLE/${pair##*:}"
+done
+PB=/usr/libexec/PlistBuddy
+PLIST="$BUNDLE/Info.plist"
+"$PB" -c "Add :CFBundleIcons dict" "$PLIST" 2>/dev/null || true
+"$PB" -c "Add :CFBundleIcons:CFBundlePrimaryIcon dict" "$PLIST" 2>/dev/null || true
+"$PB" -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName string AppIcon" "$PLIST" 2>/dev/null || true
+"$PB" -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles array" "$PLIST" 2>/dev/null || true
+"$PB" -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:0 string AppIcon29x29" "$PLIST" 2>/dev/null || true
+"$PB" -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:1 string AppIcon40x40" "$PLIST" 2>/dev/null || true
+"$PB" -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:2 string AppIcon60x60" "$PLIST" 2>/dev/null || true
+echo "包内图标："; ls "$BUNDLE" | grep -i icon
+
 cd build
 ditto -c -k --sequesterRsrc --keepParent Payload StocksLive-unsigned.ipa
 cd ..
