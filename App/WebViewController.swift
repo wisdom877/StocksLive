@@ -333,6 +333,11 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         case "sync":
             let tasks = dict["tasks"] as? [[String: Any]] ?? []
             syncAlarms(tasks)
+        case "awake":
+            // 待机页右上角呼吸点涨到最大时打过来一次：打开/关掉系统的自动锁屏。
+            // 网页侧拦不住 iOS 的自动暗屏，只有这里把 isIdleTimerDisabled 打开才真正常亮。
+            let on = (dict["on"] as? Int) ?? ((dict["on"] as? Bool) == true ? 1 : 0)
+            DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = (on != 0) }
         case "stop":
             if let id = dict["id"] as? String, !id.isEmpty {
                 let full = "wk-" + id
