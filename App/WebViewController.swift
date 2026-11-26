@@ -338,6 +338,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             syncAlarms(tasks)
         case "health":
             HealthBridge.shared.start()
+        case "orient":
+            // 待机固定横屏、应用固定竖屏。由网页在 sbOpen/sbClose 时通知
+            let on = (dict["on"] as? Int) ?? ((dict["on"] as? Bool) == true ? 1 : 0)
+            (UIApplication.shared.delegate as? AppDelegate)?.setLandscape(on != 0)
         case "awake":
             // 待机页右上角呼吸点涨到最大时打过来一次：打开/关掉系统的自动锁屏。
             // 网页侧拦不住 iOS 的自动暗屏，只有这里把 isIdleTimerDisabled 打开才真正常亮。

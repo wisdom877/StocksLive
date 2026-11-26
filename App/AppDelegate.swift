@@ -5,6 +5,37 @@ import UserNotifications
 final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     var window: UIWindow?
     private weak var web: WebViewController?
+    /// 默认竖屏；待机页打开时切成横屏，退出待机再切回来
+    private var lockLandscape = false
+
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        lockLandscape ? .landscapeRight : .portrait
+    }
+
+    /// 网页要切方向（1 横屏 / 0 竖屏）：改掉支持的方向，再让系统真的把界面转过去
+    func setLandscape(_ on: Bool) {
+        guard lockLandscape != on else { return }
+        lockLandscape = on
+        DispatchQueue.main.async {
+            guard let win = self.window else { return }
+            let want: UIInterfaceOrientationMask = on ? .landscapeRight : .portrait
+            // 先让系统知道支持的方向变了（iOS 16 起必须），再真的把界面转过去
+            if #available(iOS 16.0, *) {
+                win.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+                if let scene = win.windowScene {
+                    scene.requestGeometryUpdate(.iOS(interfaceOrientations: want)) { _ in }
+                    return
+                }
+            }
+            // 没接 Scene（这个壳是 AppDelegate + UIWindow 的老式生命周期）：走设备方向 + 尝试旋转
+            UIDevice.current.setValue(on ? UIInterfaceOrientation.landscapeRight.rawValue
+                                         : UIInterfaceOrientation.portrait.rawValue,
+                                      forKey: "orientation")
+            UIViewController.attemptRotationToDeviceOrientation()
+            win.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        }
+    }
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
