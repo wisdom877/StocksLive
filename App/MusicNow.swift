@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import MediaPlayer
 import UIKit
@@ -154,6 +155,11 @@ final class MusicNow: NSObject {
     private func playItems(_ items: [MPMediaItem]) {
         guard !items.isEmpty else { return }
         system.pause()                       // 两条通道同时放会叠音
+        // 壳平时把会话压成 ambient 且不激活（为了不压低别人的音乐）；
+        // 我们自己要出声就得临时切到 playback 并激活，否则放出来是哑的。
+        let s = AVAudioSession.sharedInstance()
+        try? s.setCategory(.playback, mode: .default, options: [])
+        try? s.setActive(true)
         useQueue = true
         queue.setQueue(with: MPMediaItemCollection(items: items))
         queue.play()
