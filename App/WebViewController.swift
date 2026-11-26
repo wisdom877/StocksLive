@@ -351,8 +351,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         case "stop":
             if let id = dict["id"] as? String, !id.isEmpty {
                 let full = "wk-" + id
-                center.removePendingNotificationRequests(withIdentifiers: [full])
-                center.removeDeliveredNotifications(withIdentifiers: [full])
+                notifyQueue.async {
+                    center.removePendingNotificationRequests(withIdentifiers: [full])
+                    center.removeDeliveredNotifications(withIdentifiers: [full])
+                }
             }
         case "standby":
             standbyOn = (dict["on"] as? Bool) ?? true
@@ -389,6 +391,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     private var scheduledIDs: [String] = []
 
     private func syncAlarms(_ tasks: [[String: Any]]) {
+        notifyQueue.async { [weak self] in self?.buildAlarms(tasks) }
+    }
+
+    private func buildAlarms(_ tasks: [[String: Any]]) {
         let center = UNUserNotificationCenter.current()
         var fresh: [(id: String, request: UNNotificationRequest)] = []
         for t in tasks {
@@ -428,17 +434,23 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     private func addAlarms(_ fresh: [(id: String, request: UNNotificationRequest)], _ freshIDs: Set<String>) {
         let center = UNUserNotificationCenter.current()
-        nativeDiag.lastError = ""
         let group = DispatchGroup()
+        let lock = NSLock()
+        var errMsg = ""
         for item in fresh {
             group.enter()
-            center.add(item.request) { [weak self] error in
-                if let error = error { self?.nativeDiag.lastError = "排入失败：\(error.localizedDescription)" }
+            center.add(item.request) { error in
+                if let error = error {
+                    lock.lock(); errMsg = "排入失败：\(error.localizedDescription)"; lock.unlock()
+                }
                 group.leave()
             }
         }
         scheduledIDs = Array(freshIDs)
-        group.notify(queue: .main) { [weak self] in self?.reportNativeState() }
+        group.notify(queue: .main) { [weak self] in
+            self?.nativeDiag.lastError = errMsg
+            self?.reportNativeState()
+        }
     }
 
     private func scheduleTestNotification(seconds: TimeInterval) {
@@ -506,8 +518,14 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     private var tonePlayer: AVAudioPlayer?
 
     /// 铃声交给原生播：Web Audio 在壳里经常被挂起（静音、没手势），原生播放最可靠
+    private var ringWanted = false
+    private var ringGen = 0
+
     private func playTone(loop: Bool) {
         if loop, let p = tonePlayer, p.isPlaying { return }
+        ringWanted = true
+        ringGen &+= 1
+        let gen = ringGen
         // 抢会话（duckOthers + 激活）会阻塞调用线程，赶上别的 App 在用音频能卡好几秒。
         // 它原来是直接在主线程上做的，正好落在「点掉提醒 → 停铃 → 又起铃」这条链里。
         // 现在放到后台队列，做完再回主线程起播。
@@ -515,7 +533,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         audioQueue.async { [weak self] in
             var diag = ""
             do { try self?.duckAudioSession() } catch { diag += "sess:\(error.localizedDescription) " }
-            DispatchQueue.main.async { self?.startTone(loop: wantLoop, diag: diag) }
+            DispatchQueue.main.async {
+                guard let self, self.ringWanted, gen == self.ringGen else { return }
+                self.startTone(loop: wantLoop, diag: diag)
+            }
         }
     }
 
@@ -550,8 +571,11 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     private func stopTone() {
-        tonePlayer?.stop()
+        let p = tonePlayer
         tonePlayer = nil
+        ringWanted = false
+        ringGen &+= 1                        // 让排队中的起播作废，别再响回来
+        audioQueue.async { p?.stop() }       // AVAudioPlayer.stop() 也可能卡，主线程不等
         restoreAudioAfterRing()
     }
 
@@ -584,6 +608,9 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         }
     }
     private let audioQueue = DispatchQueue(label: "stocks.audio.session", qos: .userInitiated)
+    // 系统通知的增删走 XPC，赶上通知中心忙的时候会卡好几秒。这些调用本来就在主线程上
+    // （桥消息回调里），一卡界面就没反应 —— 现在全部丢到这条后台队列。
+    private let notifyQueue = DispatchQueue(label: "stocks.notify", qos: .utility)
 
     /// 响铃态：用 ambient 而不是 playback —— 这样系统静音拨片一拨就真的不响，
     /// 只有非静音（响铃）时才出声；同时 mixWithOthers 不压低别人的音乐。
