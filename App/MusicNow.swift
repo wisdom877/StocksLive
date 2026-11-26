@@ -51,6 +51,8 @@ final class MusicNow: NSObject {
         case "lib":     pushLibrary()
         case "songs":   pushSongs()
         case "playlist": playPlaylist(String(describing: body["value"] ?? ""))
+        case "playlistItems": pushPlaylistItems(String(describing: body["value"] ?? ""))
+        case "playlistTrack": playPlaylistTrack(body["value"] as? [String: Any] ?? [:])
         case "song":     playSong(String(describing: body["value"] ?? ""))
         default: break
         }
@@ -172,6 +174,54 @@ final class MusicNow: NSObject {
         let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
         guard let pl = lists.first(where: { $0.persistentID == pid }) else { return }
         playItems(pl.items)
+    }
+
+    /// 把某个播放列表里的曲目推给网页：点列表是「展开」，不是「开播」
+    private func pushPlaylistItems(_ raw: String) {
+        guard libraryReady(), let pid = UInt64(raw.trimmingCharacters(in: .whitespaces)) else {
+            push("window.sbMusicTracks && window.sbMusicTracks({\"tracks\":[]});")
+            return
+        }
+        let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
+        guard let pl = lists.first(where: { $0.persistentID == pid }) else {
+            push("window.sbMusicTracks && window.sbMusicTracks({\"tracks\":[]});")
+            return
+        }
+        let name = (pl.value(forProperty: MPMediaPlaylistPropertyName) as? String) ?? ""
+        var arr: [[String: Any]] = []
+        for it in pl.items {
+            guard let title = it.title, !title.isEmpty else { continue }
+            var d: [String: Any] = ["id": String(it.persistentID), "title": title,
+                                    "artist": it.artist ?? "", "album": it.albumTitle ?? ""]
+            let dur = it.playbackDuration
+            if dur.isFinite && dur > 0 { d["dur"] = dur }
+            arr.append(d)
+        }
+        let obj: [String: Any] = ["name": name, "tracks": arr]
+        if let data = try? JSONSerialization.data(withJSONObject: obj),
+           let js = String(data: data, encoding: .utf8) {
+            push("window.sbMusicTracks && window.sbMusicTracks(\(js));")
+        }
+    }
+
+    /// 从播放列表里的某一首发始放：整张列表进队列，再点那首
+    private func playPlaylistTrack(_ body: [String: Any]) {
+        guard let listRaw = body["list"] as? String, let pid = UInt64(listRaw),
+              let trackRaw = body["track"] as? String, let tid = UInt64(trackRaw) else { return }
+        let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
+        guard let pl = lists.first(where: { $0.persistentID == pid }) else { return }
+        let items = pl.items
+        guard let start = items.first(where: { $0.persistentID == tid }) ?? items.first else { return }
+        system.pause()
+        let s = AVAudioSession.sharedInstance()
+        try? s.setCategory(.playback, mode: .default, options: [])
+        try? s.setActive(true)
+        useQueue = true
+        queue.setQueue(with: MPMediaItemCollection(items: items))
+        queue.nowPlayingItem = start
+        queue.play()
+        lastArtKey = ""
+        start()
     }
 
     private func playSong(_ raw: String) {
