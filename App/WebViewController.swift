@@ -462,8 +462,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     private static func jsString(_ s: String) -> String {
-        let data = (try? JSONSerialization.data(withJSONObject: [s])) ?? Data("[\"\"]".utf8)
-        return String(data: data, encoding: .utf8)?.dropFirst().dropLast() ?? "\"\""
+        // 把任意字符串转成一段合法的 JS 字符串字面量（带引号），错误信息里有引号 / 换行也不会把脚本弄坏
+        guard let data = try? JSONSerialization.data(withJSONObject: [s]),
+              let text = String(data: data, encoding: .utf8) else { return "\"\"" }
+        return String(text.dropFirst().dropLast())
     }
 
     /// 页面传的是本地墙钟 "YYYY-MM-DD HH:MM"，按设备本地时区还原
