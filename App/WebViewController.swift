@@ -332,32 +332,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         switch cmd {
         case "sync":
             let tasks = dict["tasks"] as? [[String: Any]] ?? []
-            center.getNotificationSettings { _ in
-                center.getPendingNotificationRequests { reqs in
-                    let old = reqs.map(\.identifier).filter { $0.hasPrefix("wk-") }
-                    center.removePendingNotificationRequests(withIdentifiers: old)
-                    center.removeDeliveredNotifications(withIdentifiers: old)
-
-                    for t in tasks {
-                        guard let when = t["when"] as? String,
-                              let date = Self.localDate(when) else { continue }
-                        let rawID = (t["id"] as? String) ?? UUID().uuidString
-                        let content = UNMutableNotificationContent()
-                        content.title = (t["title"] as? String) ?? "到点提醒"
-                        content.body = (t["meta"] as? String) ?? (t["note"] as? String) ?? ""
-                        // 自带提示音（约 3 秒两拍，比系统"咚"更能听见）；找不到文件就走系统默认
-                        content.sound = UNNotificationSound(named: UNNotificationSoundName("alarm.wav"))
-                        content.threadIdentifier = "wk-alarm"
-                        content.userInfo = ["id": rawID]
-                        if #available(iOS 15.0, *) { content.interruptionLevel = .timeSensitive }
-
-                        let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
-                        let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
-                        center.add(UNNotificationRequest(identifier: "wk-" + rawID, content: content, trigger: trigger))
-                    }
-                    DispatchQueue.main.async { self.reportNativeState() }
-                }
-            }
+            syncAlarms(tasks)
         case "stop":
             if let id = dict["id"] as? String, !id.isEmpty {
                 let full = "wk-" + id
@@ -382,14 +357,113 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         case "open":
             // 网页主动请求打开外链（如 DeepSeek 充值页）
             if let raw = dict["url"] as? String, let u = URL(string: raw) { openExternal(u) }
+        case "test":
+            // 网页「试听」：除了壳内响铃，再排一条 8 秒后的系统通知，锁屏上能不能收到一试便知
+            scheduleTestNotification(seconds: 8)
+        case "openSettings":
+            if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) }
         default:
             break
         }
     }
 
+    /// 排到系统通知里的提醒。
+    /// 原来每次同步都先把「wk-」开头的待发通知全部撤掉再重排：撤和排是异步的，
+    /// 恰好跨在到点那一秒时，撤可能落在排之后，把马上要响的那条吃掉——这就是「偶尔到点不响」。
+    /// 现在只撤「新清单里已经没有的」，清单里还在的原样覆盖（同一个 id 的 add 本身就是替换）。
+    private var scheduledIDs: [String] = []
+
+    private func syncAlarms(_ tasks: [[String: Any]]) {
+        let center = UNUserNotificationCenter.current()
+        var fresh: [(id: String, request: UNNotificationRequest)] = []
+        for t in tasks {
+            guard let when = t["when"] as? String,
+                  let date = Self.localDate(when) else { continue }
+            let rawID = (t["id"] as? String) ?? UUID().uuidString
+            let content = UNMutableNotificationContent()
+            content.title = (t["title"] as? String) ?? "到点提醒"
+            content.body = (t["meta"] as? String) ?? (t["note"] as? String) ?? ""
+            // 自带提示音（约 3 秒两拍，比系统"咚"更能听见）；找不到文件就走系统默认
+            content.sound = Bundle.main.url(forResource: "alarm", withExtension: "wav") != nil
+                ? UNNotificationSound(named: UNNotificationSoundName("alarm.wav"))
+                : UNNotificationSound.default
+            content.threadIdentifier = "wk-alarm"
+            content.userInfo = ["id": rawID]
+            if #available(iOS 15.0, *) { content.interruptionLevel = .timeSensitive }
+
+            let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+            let full = "wk-" + rawID
+            fresh.append((full, UNNotificationRequest(identifier: full, content: content, trigger: trigger)))
+        }
+        let freshIDs = Set(fresh.map { $0.id })
+        let stale = scheduledIDs.filter { !freshIDs.contains($0) }
+        if !stale.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: stale)
+            center.removeDeliveredNotifications(withIdentifiers: stale)   // 已完成 / 已删的，通知中心里也别留着
+        }
+        nativeDiag.lastError = ""
+        let group = DispatchGroup()
+        for item in fresh {
+            group.enter()
+            center.add(item.request) { [weak self] error in
+                if let error = error { self?.nativeDiag.lastError = "排入失败：\(error.localizedDescription)" }
+                group.leave()
+            }
+        }
+        scheduledIDs = Array(freshIDs)
+        group.notify(queue: .main) { [weak self] in self?.reportNativeState() }
+    }
+
+    private func scheduleTestNotification(seconds: TimeInterval) {
+        let content = UNMutableNotificationContent()
+        content.title = "测试提醒"
+        content.body = "这是 App 排进系统的通知，锁屏上能看到它，说明到点提醒走得通"
+        content.sound = Bundle.main.url(forResource: "alarm", withExtension: "wav") != nil
+            ? UNNotificationSound(named: UNNotificationSoundName("alarm.wav"))
+            : UNNotificationSound.default
+        content.threadIdentifier = "wk-alarm"
+        if #available(iOS 15.0, *) { content.interruptionLevel = .timeSensitive }
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(seconds, 1), repeats: false)
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "wk-test", content: content, trigger: trigger)
+        ) { [weak self] error in
+            if let error = error { self?.nativeDiag.lastError = "测试通知排入失败：\(error.localizedDescription)" }
+        }
+    }
+
+    private struct NativeDiag { var auth = ""; var pending = 0; var lastError = "" }
+    private var nativeDiag = NativeDiag()
+
+    /// 把真实状态回给页面：权限、已排进系统的条数、最近一次错误。
+    /// 以前这里固定回 true，权限被拒 / 排入失败页面完全不知道，表现就是「到点没反应，也没任何提示」。
     private func reportNativeState() {
-        let js = "window.wkNativeState && window.wkNativeState(true, true, \(standbyOn))"
-        DispatchQueue.main.async { self.webView.evaluateJavaScript(js, completionHandler: nil) }
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { [weak self] settings in
+            guard let self else { return }
+            let raw = settings.authorizationStatus
+            let auth: String
+            switch raw {
+            case .authorized, .provisional, .ephemeral: auth = "yes"
+            case .denied: auth = "no"
+            default: auth = "ask"
+            }
+            center.getPendingNotificationRequests { reqs in
+                let pending = reqs.filter { $0.identifier.hasPrefix("wk-") && $0.identifier != "wk-test" }.count
+                self.nativeDiag.auth = auth
+                self.nativeDiag.pending = pending
+                let js = "window.wkNativeState && window.wkNativeState(" + (auth == "yes" ? "true" : "false")
+                    + ", true, " + (self.standbyOn ? "true" : "false")
+                    + ", {auth:'" + auth + "',pending:" + String(pending)
+                    + ",err:" + Self.jsString(self.nativeDiag.lastError) + "})"
+                DispatchQueue.main.async { self.webView.evaluateJavaScript(js, completionHandler: nil) }
+            }
+        }
+    }
+
+    private static func jsString(_ s: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: [s])) ?? Data("[\"\"]".utf8)
+        return String(data: data, encoding: .utf8)?.dropFirst().dropLast() ?? "\"\""
     }
 
     /// 页面传的是本地墙钟 "YYYY-MM-DD HH:MM"，按设备本地时区还原
@@ -497,7 +571,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     private var standbyPlayer: AVAudioPlayer?
 
     @objc private func enterBackground() { syncStandbyPlayer() }
-    @objc private func enterForeground() { syncStandbyPlayer() }
+    @objc private func enterForeground() {
+        syncStandbyPlayer()
+        reportNativeState()   // 回到前台把权限 / 已排条数刷新给页面
+    }
 
     /// 后台时播一条静音循环（audio 后台模式）→ 锁屏时页面定时器还在跑，到点能自己响铃+震动
     private func syncStandbyPlayer() {
