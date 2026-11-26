@@ -3,25 +3,31 @@ import MediaPlayer
 import UIKit
 import WebKit
 
-/// 正在播放：代表系统「音乐」App 读元数据、控制播放。
-/// 只碰 MediaPlayer 的公开 API（MPMusicPlayerController.systemMusicPlayer），
-/// 不碰 MusicKit —— 自签没有 MusicKit 能力，那条路走不通。
-/// 音频仍然在「音乐」App 里播，我们只做遥控 + 镜像，完全不碰 DRM。
+/// 正在播放：镜像系统「音乐」App，并支持从「音乐」资料库直接起播。
+/// 只用 MediaPlayer 的公开 API，不碰 MusicKit —— 自签没有 MusicKit 能力，那条路走不通。
+/// 两条播放通道：
+///   ① systemMusicPlayer：用户在「音乐」App 里放的东西，我们只做遥控 + 镜像，完全不碰 DRM；
+///   ② applicationQueuePlayer：在待机页点了资料库里的播放列表/单曲，由本 App 起播，
+///      同样镜像进度和封面（资料库里的歌本来就是设备上的，不涉及云端解密）。
 final class MusicNow: NSObject {
     static let shared = MusicNow()
 
     private weak var web: WKWebView?
-    private let player = MPMusicPlayerController.systemMusicPlayer
+    private let system = MPMusicPlayerController.systemMusicPlayer
+    private let queue = MPMusicPlayerController.applicationQueuePlayer
+    private var useQueue = false           // true 时所有遥控/镜像都对着 applicationQueuePlayer
     private var timer: Timer?
     private var lastArtKey = ""
     private var observed = false
     private var authAsked = false
 
+    private var active: MPMusicPlayerController { useQueue ? queue : system }
+
     func attach(_ view: WKWebView) {
         web = view
     }
 
-    /// 网页来的指令（start / stop / play / pause / toggle / next / prev / seek / refresh）
+    /// 网页来的指令（start / stop / play / pause / toggle / next / prev / seek / refresh / lib / songs / playlist / song）
     func command(_ body: [String: Any]) {
         DispatchQueue.main.async { self.run(body) }
     }
@@ -31,16 +37,20 @@ final class MusicNow: NSObject {
         switch act {
         case "start":   start()
         case "stop":    timer?.invalidate(); timer = nil
-        case "play":    player.play()
-        case "pause":   player.pause()
+        case "play":    active.play()
+        case "pause":   active.pause()
         case "toggle":
-            if player.playbackState == .playing { player.pause() } else { player.play() }
-        case "next":    player.skipToNextItem()
-        case "prev":    player.skipToPreviousItem()
+            if active.playbackState == .playing { active.pause() } else { active.play() }
+        case "next":    active.skipToNextItem()
+        case "prev":    active.skipToPreviousItem()
         case "seek":
             let v = (body["value"] as? NSNumber)?.doubleValue ?? 0
-            if v.isFinite { player.currentPlaybackTime = max(0, v) }
+            if v.isFinite { active.currentPlaybackTime = max(0, v) }
         case "refresh": start()
+        case "lib":     pushLibrary()
+        case "songs":   pushSongs()
+        case "playlist": playPlaylist(String(describing: body["value"] ?? ""))
+        case "song":     playSong(String(describing: body["value"] ?? ""))
         default: break
         }
         tick()
@@ -50,12 +60,15 @@ final class MusicNow: NSObject {
         requestAuthIfNeeded()
         if !observed {
             observed = true
-            player.beginGeneratingPlaybackNotifications()
+            system.beginGeneratingPlaybackNotifications()
+            queue.beginGeneratingPlaybackNotifications()
             let c = NotificationCenter.default
-            c.addObserver(self, selector: #selector(onChange),
-                          name: .MPMusicPlayerControllerNowPlayingItemDidChange, object: player)
-            c.addObserver(self, selector: #selector(onChange),
-                          name: .MPMusicPlayerControllerPlaybackStateDidChange, object: player)
+            [system, queue].forEach { p in
+                c.addObserver(self, selector: #selector(onChange),
+                              name: .MPMusicPlayerControllerNowPlayingItemDidChange, object: p)
+                c.addObserver(self, selector: #selector(onChange),
+                              name: .MPMusicPlayerControllerPlaybackStateDidChange, object: p)
+            }
         }
         if timer == nil {
             // 1 秒一拍：进度、状态都靠它，秒级足够，别更密
@@ -73,38 +86,132 @@ final class MusicNow: NSObject {
         guard st == .notDetermined, !authAsked else { return }
         authAsked = true
         MPMediaLibrary.requestAuthorization { [weak self] _ in
-            DispatchQueue.main.async { self?.tick() }
+            DispatchQueue.main.async {
+                self?.tick()
+                self?.pushLibrary()      // 授权回来立刻补一次列表，省得用户再点
+            }
         }
     }
 
+    /* ---------- 资料库：播放列表 / 全部歌曲 ---------- */
+
+    private func libraryReady() -> Bool {
+        MPMediaLibrary.authorizationStatus() == .authorized
+    }
+
+    private func pushLibrary() {
+        guard libraryReady() else {
+            requestAuthIfNeeded()
+            push("window.sbMusicLib && window.sbMusicLib({\"auth\":\"\(authText())\",\"playlists\":[]});")
+            return
+        }
+        let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
+        var arr: [[String: Any]] = []
+        for pl in lists {
+            guard let name = pl.value(forProperty: MPMediaPlaylistPropertyName) as? String, !name.isEmpty else { continue }
+            var d: [String: Any] = ["id": String(pl.persistentID), "name": name, "count": pl.items.count]
+            if let img = pl.representativeItem?.artwork?.image(at: CGSize(width: 96, height: 96)),
+               let data = img.jpegData(compressionQuality: 0.6) {
+                d["art"] = "data:image/jpeg;base64," + data.base64EncodedString()
+            }
+            arr.append(d)
+        }
+        arr.sort { (($0["name"] as? String) ?? "").localizedStandardCompare((($1["name"] as? String) ?? "")) == .orderedAscending }
+        let obj: [String: Any] = ["auth": "authorized", "playlists": Array(arr.prefix(80))]
+        if let data = try? JSONSerialization.data(withJSONObject: obj),
+           let js = String(data: data, encoding: .utf8) {
+            push("window.sbMusicLib && window.sbMusicLib(\(js));")
+        }
+    }
+
+    private func pushSongs() {
+        guard libraryReady() else {
+            requestAuthIfNeeded()
+            push("window.sbMusicSongs && window.sbMusicSongs({\"auth\":\"\(authText())\",\"songs\":[]});")
+            return
+        }
+        let items = MPMediaQuery.songs().items ?? []
+        var arr: [[String: Any]] = []
+        for it in items {
+            guard let title = it.title, !title.isEmpty else { continue }
+            var d: [String: Any] = [
+                "id": String(it.persistentID),
+                "title": title,
+                "artist": it.artist ?? "",
+                "album": it.albumTitle ?? "",
+            ]
+            let dur = it.playbackDuration
+            if dur.isFinite && dur > 0 { d["dur"] = dur }
+            arr.append(d)
+        }
+        let obj: [String: Any] = ["auth": "authorized", "songs": Array(arr.prefix(400)), "total": arr.count]
+        if let data = try? JSONSerialization.data(withJSONObject: obj),
+           let js = String(data: data, encoding: .utf8) {
+            push("window.sbMusicSongs && window.sbMusicSongs(\(js));")
+        }
+    }
+
+    private func playItems(_ items: [MPMediaItem]) {
+        guard !items.isEmpty else { return }
+        system.pause()                       // 两条通道同时放会叠音
+        useQueue = true
+        queue.setQueue(with: MPMediaItemCollection(items: items))
+        queue.play()
+        lastArtKey = ""
+        start()
+    }
+
+    private func playPlaylist(_ raw: String) {
+        guard let pid = UInt64(raw.trimmingCharacters(in: .whitespaces)) else { return }
+        let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
+        guard let pl = lists.first(where: { $0.persistentID == pid }) else { return }
+        playItems(pl.items)
+    }
+
+    private func playSong(_ raw: String) {
+        guard let pid = UInt64(raw.trimmingCharacters(in: .whitespaces)) else { return }
+        let items = MPMediaQuery.songs().items ?? []
+        guard let it = items.first(where: { $0.persistentID == pid }) else { return }
+        playItems([it])
+    }
+
+    /* ---------- 镜像 ---------- */
+
     private func tick() {
         guard web != nil else { return }
-        var d: [String: Any] = ["auth": authText()]
-        switch player.playbackState {
+        // 谁真的在放就镜像谁：用户在「音乐」App 里按了播放，会自动切回系统通道
+        if system.playbackState == .playing { useQueue = false }
+        else if queue.playbackState == .playing { useQueue = true }
+
+        let p = active
+        var d: [String: Any] = ["auth": authText(), "src": useQueue ? "queue" : "system"]
+        switch p.playbackState {
         case .playing: d["state"] = "playing"
         case .paused:  d["state"] = "paused"
         case .stopped: d["state"] = "stopped"
         default:       d["state"] = "none"
         }
-        let elapsed = player.currentPlaybackTime
+        let elapsed = p.currentPlaybackTime
         if elapsed.isFinite && elapsed >= 0 { d["elapsed"] = elapsed }
-        if let it = player.nowPlayingItem {
+        if let it = p.nowPlayingItem {
             d["title"] = it.title ?? ""
             d["artist"] = it.artist ?? ""
             d["album"] = it.albumTitle ?? ""
             let dur = it.playbackDuration
             if dur.isFinite && dur > 0 { d["dur"] = dur }
-            d["artKey"] = it.playbackStoreID
+            // 资料库曲目的 playbackStoreID 可能是 0，用 persistentID 兜一层，换歌才认得出
+            let key = it.playbackStoreID != "0" ? it.playbackStoreID : String(it.persistentID)
+            d["artKey"] = key
             // 封面只在换歌时推一次：600×600 的 JPEG 大概 60~90KB，每秒重推没意义
-            if it.playbackStoreID != lastArtKey {
-                lastArtKey = it.playbackStoreID
+            if key != lastArtKey {
+                lastArtKey = key
                 if let img = it.artwork?.image(at: CGSize(width: 600, height: 600)),
                    let data = img.jpegData(compressionQuality: 0.8) {
                     let b64 = data.base64EncodedString()
-                    push("window.sbMusicArt && window.sbMusicArt('\(it.playbackStoreID)', "
+                    push("window.sbMusicArt && window.sbMusicArt('\(key)', "
                          + "'data:image/jpeg;base64,\(b64)');")
                 } else {
-                    push("window.sbMusicArt && window.sbMusicArt('\(it.playbackStoreID)', '');")
+                    push("window.sbMusicArt && window.sbMusicArt('\(key)', '');")
                 }
             }
         }
