@@ -397,11 +397,22 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             fresh.append((full, UNNotificationRequest(identifier: full, content: content, trigger: trigger)))
         }
         let freshIDs = Set(fresh.map { $0.id })
-        let stale = scheduledIDs.filter { !freshIDs.contains($0) }
-        if !stale.isEmpty {
-            center.removePendingNotificationRequests(withIdentifiers: stale)
-            center.removeDeliveredNotifications(withIdentifiers: stale)   // 已完成 / 已删的，通知中心里也别留着
+        // 以前只删「本次进程排过的」id，进程一重启 scheduledIDs 就是空的：
+        // 上次会话排进系统、这次清单里已经没有的提醒（任务删了 / 改期了 / 换了一天）会留在系统里，
+        // 到点照样响，还占 iOS 的 64 条待发名额。这里直接按系统里的真实清单兜底清一遍。
+        center.getPendingNotificationRequests { pending in
+            let stale = pending.map { $0.identifier }
+                .filter { $0.hasPrefix("wk-") && $0 != "wk-test" && !freshIDs.contains($0) }
+            if !stale.isEmpty {
+                center.removePendingNotificationRequests(withIdentifiers: stale)
+                center.removeDeliveredNotifications(withIdentifiers: stale)
+            }
+            self.addAlarms(fresh, freshIDs)
         }
+    }
+
+    private func addAlarms(_ fresh: [(id: String, request: UNNotificationRequest)], _ freshIDs: Set<String>) {
+        let center = UNUserNotificationCenter.current()
         nativeDiag.lastError = ""
         let group = DispatchGroup()
         for item in fresh {
