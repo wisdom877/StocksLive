@@ -18,16 +18,33 @@ final class BleHeart: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var scanningAll = false
     private var scanStartedAt = Date()
     private var retryWork: DispatchWorkItem?
+    private var paused = false
 
     private let svcHR = CBUUID(string: "180D")      // Heart Rate
     private let chrHR = CBUUID(string: "2A37")      // Heart Rate Measurement
 
     func attach(_ view: WKWebView) {
         web = view
+        NotificationCenter.default.addObserver(self, selector: #selector(appBackground),
+                                               name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appForeground),
+                                               name: UIApplication.willEnterForegroundNotification, object: nil)
         start()
     }
 
+    /// 进后台停扫：蓝牙中心扫描是最耗电的那一段，已经连上的设备继续收 notify 不受影响
+    @objc private func appBackground() {
+        paused = true
+        retryWork?.cancel()
+        if target == nil { central?.stopScan() }
+    }
+    @objc private func appForeground() {
+        paused = false
+        if target == nil { start() }
+    }
+
     func start() {
+        guard !paused else { return }
         if let c = central {
             if c.state == .poweredOn { scan() }
             return
@@ -43,7 +60,7 @@ final class BleHeart: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         scanStartedAt = Date()
         // 先按服务过滤（省电、命中准）；8 秒没结果再放开扫全部，兜住那些只在名字里带 HR 的设备
         c.scanForPeripherals(withServices: [svcHR],
-                             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+                             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])   // 重复包会把回调刷爆，心率 1Hz 就够
     }
 
     private func scanWide() {
@@ -146,6 +163,7 @@ final class BleHeart: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     private func scheduleReconnect() {
         retryWork?.cancel()
+        guard !paused else { return }
         let w = DispatchWorkItem { [weak self] in self?.scan() }
         retryWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: w)

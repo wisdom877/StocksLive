@@ -361,6 +361,9 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             pushBattery()
         case "music":
             MusicNow.shared.command(dict)
+            // 停止/暂停后把自己激活的 playback 会话还回去，否则 App 会一直以「在放音频」的身份留在后台
+            let act = (dict["act"] as? String) ?? ""
+            if act == "stop" || act == "pause" { restoreAudioAfterRing() }
         case "orient":
             // 待机固定横屏、应用固定竖屏。由网页在 sbOpen/sbClose 时通知
             let on = (dict["on"] as? Int) ?? ((dict["on"] as? Bool) == true ? 1 : 0)
@@ -536,7 +539,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         return f.date(from: String(s.prefix(16)))
     }
 
-    private var standbyOn = true
+    private var standbyOn = false   // 默认不保活：没有用户明确打开，后台就该挂起
     private var tonePlayer: AVAudioPlayer?
 
     /// 铃声交给原生播：Web Audio 在壳里经常被挂起（静音、没手势），原生播放最可靠
