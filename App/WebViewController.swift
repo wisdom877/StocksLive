@@ -567,10 +567,15 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     /// 空闲态：ambient + mix，从不激活会话，绝不压低任何人的音乐
     private func idleAudioSession() {
-        let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
-        try? s.setActive(false, options: [.notifyOthersOnDeactivation])
+        // 切分类 / 解除激活会阻塞调用线程（正赶上别的 App 在用音频时尤其狠）。
+        // 它跑在桥消息的回调里，也就是主线程 —— 之前点「知道了」卡五六秒就是它。挪到后台队列，主线程不等。
+        audioQueue.async {
+            let s = AVAudioSession.sharedInstance()
+            try? s.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+            try? s.setActive(false, options: [.notifyOthersOnDeactivation])
+        }
     }
+    private let audioQueue = DispatchQueue(label: "stocks.audio.session", qos: .userInitiated)
 
     /// 响铃态：用 ambient 而不是 playback —— 这样系统静音拨片一拨就真的不响，
     /// 只有非静音（响铃）时才出声；同时 mixWithOthers 不压低别人的音乐。
@@ -591,9 +596,11 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     /// 后台保活态：playback 但要 mixWithOthers —— 静音循环必须和别人共存，不能 duck
     private func keepAliveAudioSession() {
-        let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-        try? s.setActive(true)
+        audioQueue.async {
+            let s = AVAudioSession.sharedInstance()
+            try? s.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try? s.setActive(true)
+        }
     }
     private var standbyPlayer: AVAudioPlayer?
 
