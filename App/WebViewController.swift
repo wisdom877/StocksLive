@@ -104,10 +104,27 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         view.addSubview(webView)
         HealthBridge.shared.attach(webView)
         BleHeart.shared.attach(webView)   // 蓝牙心率：手表/心率带广播的标准心率服务
+        // 待机右上角要显示电量。网页没有任何电池 API，只能由壳读 UIDevice 再推下去。
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        for name in [UIDevice.batteryLevelDidChangeNotification, UIDevice.batteryStateDidChangeNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(pushBattery),
+                                                   name: name, object: nil)
+        }
         addLoading()
         NotificationCenter.default.addObserver(self, selector: #selector(onActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
         load()
+    }
+
+    /// 电量百分比 + 是否在充电（batteryLevel 未知时是 -1，交给网页自己收起来）
+    @objc private func pushBattery() {
+        let d = UIDevice.current
+        let lv = d.batteryLevel
+        let chg: Int = (d.batteryState == .charging || d.batteryState == .full) ? 1 : 0
+        let js = "window.sbBattery && window.sbBattery(\(lv), \(chg));"
+        DispatchQueue.main.async { [weak self] in
+            self?.webView.evaluateJavaScript(js, completionHandler: nil)
+        }
     }
 
     @objc private func onActive() {
@@ -339,6 +356,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             syncAlarms(tasks)
         case "health":
             HealthBridge.shared.start()
+        case "batt":
+            pushBattery()
         case "orient":
             // 待机固定横屏、应用固定竖屏。由网页在 sbOpen/sbClose 时通知
             let on = (dict["on"] as? Int) ?? ((dict["on"] as? Bool) == true ? 1 : 0)
