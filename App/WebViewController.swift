@@ -508,11 +508,18 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     /// 铃声交给原生播：Web Audio 在壳里经常被挂起（静音、没手势），原生播放最可靠
     private func playTone(loop: Bool) {
         if loop, let p = tonePlayer, p.isPlaying { return }
-        // 只在响铃这一刻抢会话并把别人的音乐压低；响完（见 audioPlayerDidFinishPlaying）立刻还给 ambient
-        var diag = ""
-        do { try duckAudioSession() }
-        catch { diag += "sess:\(error.localizedDescription) " }
+        // 抢会话（duckOthers + 激活）会阻塞调用线程，赶上别的 App 在用音频能卡好几秒。
+        // 它原来是直接在主线程上做的，正好落在「点掉提醒 → 停铃 → 又起铃」这条链里。
+        // 现在放到后台队列，做完再回主线程起播。
+        let wantLoop = loop
+        audioQueue.async { [weak self] in
+            var diag = ""
+            do { try self?.duckAudioSession() } catch { diag += "sess:\(error.localizedDescription) " }
+            DispatchQueue.main.async { self?.startTone(loop: wantLoop, diag: diag) }
+        }
+    }
 
+    private func startTone(loop: Bool, diag: String) {
         guard let url = Bundle.main.url(forResource: "alarm", withExtension: "wav") else {
             reportTone("no-file"); return
         }
