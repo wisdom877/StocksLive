@@ -103,6 +103,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         webView.underPageBackgroundColor = .systemBackground
         view.addSubview(webView)
         HealthBridge.shared.attach(webView)
+        BleHeart.shared.attach(webView)   // 蓝牙心率：手表/心率带广播的标准心率服务
         addLoading()
         NotificationCenter.default.addObserver(self, selector: #selector(onActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
