@@ -49,10 +49,11 @@ final class MusicNow: NSObject {
         switch act {
         case "start":   start()
         case "stop":    timer?.invalidate(); timer = nil
-        case "play":    active.play()
+        case "play":    activatePlaybackSession(); active.play()
         case "pause":   active.pause()
         case "toggle":
-            if active.playbackState == .playing { active.pause() } else { active.play() }
+            if active.playbackState == .playing { active.pause() }
+            else { activatePlaybackSession(); active.play() }
         case "next":    active.skipToNextItem()
         case "prev":    active.skipToPreviousItem()
         case "seek":
