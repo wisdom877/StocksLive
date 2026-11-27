@@ -24,6 +24,8 @@ final class CarPlayReceiver {
     private var keyframeLastSent: DispatchTime?
     private var keyframeAttempts = 0
     private var keyframeReason = ""
+    private var keyframeWatchdog: DispatchWorkItem?
+    private var stalledNotified = false
     private var touchSlots = TouchSlots(count: CarPlayInfo.touchContacts)
     private var displaySize: (width: Int, height: Int)?
     private var nightMode: Bool?
@@ -36,6 +38,8 @@ final class CarPlayReceiver {
     var onListening: ((UInt16) -> Void)?
     var onControlConnected: (() -> Void)?
     var onVideo: ((Data, VideoCodec) -> Void)?
+    var onVideoClosed: (() -> Void)?
+    var onVideoStalled: ((String) -> Void)?
     var onFailure: ((String) -> Void)?
 
     func setLocalVideoEnabled(_ enabled: Bool) {
@@ -178,7 +182,10 @@ final class CarPlayReceiver {
 
     private func requestKeyFrameOnQueue(reason: String) {
         let now = DispatchTime.now()
-        if keyframeWantedSince == nil { keyframeWantedSince = now; keyframeAttempts = 0; keyframeReason = reason }
+        if keyframeWantedSince == nil {
+            keyframeWantedSince = now; keyframeAttempts = 0; keyframeReason = reason
+            armKeyframeWatchdog()
+        }
         // 250 ms throttle: several recovery paths share one request.
         if let last = keyframeLastSent, now.uptimeNanoseconds - last.uptimeNanoseconds < 250_000_000 { return }
         sendKeyFrameRequest()
@@ -192,8 +199,11 @@ final class CarPlayReceiver {
         guard media.requestKeyFrame() else { return }
         if keyframeAttempts == 1 { log("已请求关键帧（\(keyframeReason)）") }
         guard keyframeAttempts < 8 else {
-            log("iPhone 未响应关键帧请求（已重试 \(keyframeAttempts) 次），等待自然关键帧")
-            keyframeWantedSince = nil; return
+            log("iPhone 未响应关键帧请求（已重试 \(keyframeAttempts) 次），准备重启接收端")
+            keyframeWantedSince = nil
+            keyframeWatchdog?.cancel(); keyframeWatchdog = nil
+            notifyStalled("关键帧请求 8 次未响应")
+            return
         }
         let run = generation
         queue.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -205,17 +215,44 @@ final class CarPlayReceiver {
     private func keyframeArrived() {
         guard let since = keyframeWantedSince else { return }
         keyframeWantedSince = nil
+        keyframeWatchdog?.cancel(); keyframeWatchdog = nil
+        stalledNotified = false
         let ms = (DispatchTime.now().uptimeNanoseconds - since.uptimeNanoseconds) / 1_000_000
         log("关键帧已到达（\(ms) ms，\(keyframeAttempts) 次请求）")
     }
 
-    private static func containsRandomAccess(_ accessUnit: Data, codec: VideoCodec) -> Bool {
-        (try? AnnexB.units(in: accessUnit))?.contains { codec.isRandomAccess($0) } ?? false
+    /// A watchdog independent of the event channel: even if forceKeyFrame cannot be
+    /// sent, a session that has produced no recoverable picture for 9s is restarted
+    /// instead of leaving the last frame frozen forever.
+    private func armKeyframeWatchdog() {
+        keyframeWatchdog?.cancel()
+        let run = generation
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.generation == run, self.keyframeWantedSince != nil else { return }
+            self.log("等待关键帧超过 9 秒，准备重启接收端")
+            self.keyframeWantedSince = nil
+            self.keyframeAttempts = 0
+            self.keyframeWatchdog = nil
+            self.notifyStalled("等待关键帧超时")
+        }
+        keyframeWatchdog = item
+        queue.asyncAfter(deadline: .now() + 9, execute: item)
+    }
+
+    private func notifyStalled(_ reason: String) {
+        guard !stalledNotified else { return }
+        stalledNotified = true
+        let run = generation
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.generation == run else { return }
+            self.onVideoStalled?(reason)
+        }
     }
 
     private func stopOnQueue() {
         DispatchQueue.main.async { [weak self] in self?.discoveryService?.stop(); self?.discoveryService = nil }
         generation = UUID(); listener?.cancel(); listener = nil
+        keyframeWatchdog?.cancel(); keyframeWatchdog = nil; stalledNotified = false
         localSkipping = false; keyframeWantedSince = nil; keyframeLastSent = nil; keyframeAttempts = 0
         touchSlots.reset()
         for connection in connections.values { connection.cancel() }
@@ -290,9 +327,16 @@ final class CarPlayReceiver {
                                                 audioEnabled: configuration.audioEnabled, hevc: configuration.videoCodec == .h265)
                 media.onLog = { [weak self] in self?.log($0) }
                 if let nightMode { media.setNightMode(nightMode) }
+                let run = generation
+                media.onVideoClosed = { [weak self] in
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.generation == run else { return }
+                        self.onVideoClosed?()
+                    }
+                }
                 media.onVideo = { [weak self] data, codec in
                     guard let self else { return }
-                    let keyframe = Self.containsRandomAccess(data, codec: codec)
+                    let keyframe = AnnexB.containsRandomAccess(data, codec: codec)
                     if keyframe { self.keyframeArrived() }
                     guard self.localVideoEnabled else { return }
                     if self.localSkipping {

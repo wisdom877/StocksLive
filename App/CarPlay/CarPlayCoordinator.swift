@@ -53,6 +53,12 @@ final class CarPlayCoordinator: NSObject {
     private var backgroundObserver: NSObjectProtocol?
     private var heartObserver: NSObjectProtocol?
     private var lastSSID: String?
+    private var videoHealthTimer: Timer?
+    private var lastVideoAt: CFTimeInterval = 0
+    private var videoStartAt: CFTimeInterval = 0
+    private var lastRecoveryAt: CFTimeInterval = 0
+    private var recoveryCount = 0
+    private var recovering = false
     var onIdleAudio: (() -> Void)?
 
     private static let ssidKey = "carplaySSID"
@@ -88,6 +94,7 @@ final class CarPlayCoordinator: NSObject {
         case "start":
             // 网页设置页把分辨率 / 帧率 / 编码 / 音频带在这里；先落盘，再启动。
             saveReceiverConfig(body)
+            recovering = false; recoveryCount = 0; lastRecoveryAt = 0
             let ssid = (body["ssid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let password = body["password"] as? String
             start(ssid: ssid, password: password)
@@ -95,6 +102,7 @@ final class CarPlayCoordinator: NSObject {
             saveReceiverConfig(body)
         case "restart":
             // 画面参数只能在会话建立前生效：停掉当前会话，再用新配置重新握手。
+            recovering = false; recoveryCount = 0; lastRecoveryAt = 0
             let ssid = lastSSID
             var password: String? = nil
             if let ssid, let saved = try? WiFiCredentials.password(for: ssid) { password = saved }
@@ -160,6 +168,7 @@ final class CarPlayCoordinator: NSObject {
 
     private func start(ssid: String?, password: String?) {
         guard !active, !resolvingSSID else { return }
+        if !recovering { recoveryCount = 0; lastRecoveryAt = 0 }
         if let ssid, !ssid.isEmpty {
             begin(ssid: ssid, password: password ?? "")
             return
@@ -225,6 +234,10 @@ final class CarPlayCoordinator: NSObject {
         active = true
         displayedVideo = false
         covered = false
+        recovering = false
+        lastVideoAt = CACurrentMediaTime()
+        videoStartAt = lastVideoAt
+        stage.surface.frameRate = Double(config.maxFPS)
         stage.surface.reset()
         stage.isHidden = true
         heartRail.isHidden = true
@@ -243,10 +256,13 @@ final class CarPlayCoordinator: NSObject {
             self?.push(state: "ready", message: "已连接，正在协商画面…")
             self?.probe.didConnectControl()
         }
+        receiver.onVideoClosed = { [weak self] in self?.videoDidClose("视频通道已关闭") }
+        receiver.onVideoStalled = { [weak self] reason in self?.videoDidClose(reason) }
         receiver.onVideo = { [weak self] data, codec in
             guard let self, self.active else { return }
             do {
                 try self.stage.surface.enqueue(accessUnit: data, codec: codec)
+                self.lastVideoAt = CACurrentMediaTime()
                 if !self.displayedVideo {
                     self.displayedVideo = true
                     self.stage.isHidden = self.covered
@@ -257,6 +273,7 @@ final class CarPlayCoordinator: NSObject {
                 }
             } catch {
                 self.log("视频显示失败：\(error.localizedDescription)")
+                self.receiver.requestKeyFrame(reason: "视频显示失败")
             }
         }
         stage.surface.onLog = { [weak self] in self?.log($0) }
@@ -277,14 +294,17 @@ final class CarPlayCoordinator: NSObject {
             self.probe.start(configuration: live, identity: identity)
         }
         receiver.start(configuration: config, identity: identity)
+        startVideoHealthTimer()
     }
 
-    private func stop(reason: String?, state: String = "idle") {
+    private func stop(reason: String?, state: String = "idle", keepRecovery: Bool = false) {
         guard active || !stage.isHidden || resolvingSSID else { return }
         resolvingSSID = false
         active = false
         displayedVideo = false
         covered = false
+        if !keepRecovery { recovering = false }
+        videoHealthTimer?.invalidate(); videoHealthTimer = nil
         probe.stop()
         receiver.stop()
         stage.surface.reset()
@@ -294,6 +314,55 @@ final class CarPlayCoordinator: NSObject {
         closeButton.removeFromSuperview()
         onIdleAudio?()
         push(state: state, message: reason ?? "CarPlay 已停止")
+    }
+
+    // A frozen last frame is indistinguishable from a healthy paused picture at the
+    // UI layer. Keep a cheap 1s heartbeat and restart the whole receiver only after
+    // 8s without a decoded frame, so a Wi-Fi or keyframe stall cannot stay forever.
+    private func startVideoHealthTimer() {
+        videoHealthTimer?.invalidate()
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.checkVideoHealth() }
+        RunLoop.main.add(timer, forMode: .common)
+        videoHealthTimer = timer
+    }
+
+    private func checkVideoHealth() {
+        guard active, !covered, !recovering else { return }
+        let now = CACurrentMediaTime()
+        if displayedVideo {
+            guard now - lastVideoAt > 8 else { return }
+            requestRecovery("8 秒没有新画面")
+        } else if now - videoStartAt > 20 {
+            requestRecovery("启动后 20 秒没有画面")
+        }
+    }
+
+    private func videoDidClose(_ reason: String) {
+        guard active else { return }
+        log("CarPlay 画面中断：\(reason)")
+        requestRecovery(reason)
+    }
+
+    private func requestRecovery(_ reason: String) {
+        guard active, !recovering else { return }
+        let now = CACurrentMediaTime()
+        if now - lastRecoveryAt > 60 { recoveryCount = 0 }
+        guard recoveryCount < 3 else {
+            stop(reason: "CarPlay 连续中断，请检查 Wi-Fi 后重试", state: "failed")
+            return
+        }
+        recoveryCount += 1
+        lastRecoveryAt = now
+        recovering = true
+        log("正在自动重连 CarPlay（第 \(recoveryCount) 次）：\(reason)")
+        let ssid = lastSSID
+        var password: String? = nil
+        if let ssid, let saved = try? WiFiCredentials.password(for: ssid) { password = saved }
+        stop(reason: "画面中断，正在重连", state: "starting", keepRecovery: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, !self.active, self.recovering else { return }
+            self.start(ssid: ssid, password: password)
+        }
     }
 
     private func openWiFiSettings() {

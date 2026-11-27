@@ -23,6 +23,10 @@ final class H264Surface: UIView {
     private var parameters: VideoParameterSets?
     private var pending: [(CMSampleBuffer, Int)] = []
     private var pendingBytes = 0
+    /// Target cadence for the presentation timestamps handed to the display layer.
+    var frameRate: Double = 30
+    private var nextPresentationTime: CMTime?
+    private var lastSlowLogAt: CFTimeInterval = 0
     private var requesting = false
     private var hasEnqueuedFrame = false
     private var awaitingKeyframe = false
@@ -73,6 +77,7 @@ final class H264Surface: UIView {
         display.flush()
         hasEnqueuedFrame = false
         checkingDisplaySince = nil
+        nextPresentationTime = nil
         lastRecovery = ProcessInfo.processInfo.systemUptime
         if !awaitingKeyframe { onLog?(CWL("视频渲染器将在下一个关键帧恢复：{1}", [String(describing: reason)])) }
         awaitingKeyframe = true
@@ -89,6 +94,7 @@ final class H264Surface: UIView {
     /// Frames were skipped while the app was in the background: start again at a fresh keyframe.
     func resumeAfterBackground(skippedFrames: Bool) {
         suspended = false
+        nextPresentationTime = nil
         guard format != nil else { return }
         if skippedFrames || rendererNeedsRecovery {
             recover(reason: CWL("回到前台"))
@@ -107,6 +113,7 @@ final class H264Surface: UIView {
         releaseAllTouches()
         display.stopRequestingMediaData(); requesting = false
         pending.removeAll(); pendingBytes = 0; awaitingKeyframe = false
+        nextPresentationTime = nil
         display.flushAndRemoveImage(); format = nil; parameters = nil; hasEnqueuedFrame = false
     }
 
@@ -135,6 +142,10 @@ final class H264Surface: UIView {
     func enqueue(accessUnit: Data, codec: VideoCodec) throws {
         dispatchPrecondition(condition: .onQueue(.main))
         guard !suspended else { return }
+        let startedAt = CACurrentMediaTime()
+        // While waiting for an IDR, discard P-frames before splitting them. A full
+        // Annex-B pass on every skipped frame was the largest avoidable main-thread cost.
+        if awaitingKeyframe, !AnnexB.containsRandomAccess(accessUnit, codec: codec) { return }
         let units = try AnnexB.units(in: accessUnit)
         if parameters?.codec != codec { parameters = VideoParameterSets(codec: codec); format = nil }
         var picture: [Data] = []
@@ -147,6 +158,7 @@ final class H264Surface: UIView {
             let newFormat = try makeFormat(sets)
             display.stopRequestingMediaData(); requesting = false
             pending.removeAll(); pendingBytes = 0
+            nextPresentationTime = nil
             display.flush(); format = newFormat
             onLog?(CWL("本机显示层使用 {1}", [String(describing: codec.displayName)]))
         }
@@ -190,15 +202,24 @@ final class H264Surface: UIView {
         guard status == noErr else { throw ProtocolError.malformed(CWL("无法写入视频缓冲区")) }
         var sample: CMSampleBuffer?
         var size = bytes.count
-        var timing = CMSampleTimingInfo(duration: .invalid,
-            presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()), decodeTimeStamp: .invalid)
+        // CarPlay is a live stream, but the display layer still needs a monotonic
+        // presentation clock. Without this, a burst of network frames is painted all
+        // at once and the next pause looks like a freeze. Keep the first frame due now
+        // and each following frame one cadence later, never in the past.
+        let interval = CMTime(seconds: 1.0 / max(frameRate, 1), preferredTimescale: 1_000_000)
+        let hostNow = CMClockGetTime(CMClockGetHostTimeClock())
+        var stamp = hostNow
+        if let next = nextPresentationTime {
+            let candidate = CMTimeAdd(next, interval)
+            if CMTimeCompare(candidate, hostNow) >= 0 { stamp = candidate }
+        }
+        nextPresentationTime = CMTimeAdd(stamp, interval)
+        var timing = CMSampleTimingInfo(duration: interval,
+            presentationTimeStamp: stamp, decodeTimeStamp: .invalid)
         status = CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format,
             sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
             sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sample)
         guard status == noErr, let sample else { throw ProtocolError.malformed(CWL("无法创建视频帧")) }
-        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true) as? [NSMutableDictionary] {
-            attachments.first?[kCMSampleAttachmentKey_DisplayImmediately] = true
-        }
         pending.append((sample, bytes.count)); pendingBytes += bytes.count
         // Retain dependent compressed frames until the decoder is ready. Dropping
         // an arbitrary P-frame corrupts every dependent frame up to the next IDR.
@@ -206,12 +227,19 @@ final class H264Surface: UIView {
             requesting = true
             display.requestMediaDataWhenReady(on: .main) { [weak self] in self?.drain() }
         }
+        let cost = CACurrentMediaTime() - startedAt
+        if cost >= 0.008, CACurrentMediaTime() - lastSlowLogAt >= 1 {
+            lastSlowLogAt = CACurrentMediaTime()
+            onLog?(CWL("视频帧主线程耗时 {1} ms（待显示 {2} 帧）",
+                [String(format: "%.1f", cost * 1000), String(describing: pending.count)]))
+        }
     }
 
     func suspendForExternalOutput() {
         suspended = true
         display.stopRequestingMediaData(); requesting = false
         pending.removeAll(); pendingBytes = 0
+        nextPresentationTime = nil
         display.flush()
     }
 

@@ -25,6 +25,30 @@ public enum AnnexB {
             return Data(bytes[begin..<end])
         }
     }
+    /// Cheap keyframe probe used on every access unit before the full NAL split.
+    /// It only walks start codes and reads the first byte of each NAL header.
+    public static func containsRandomAccess(_ data: Data, codec: VideoCodec) -> Bool {
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self), raw.count >= 4 else { return false }
+            let count = raw.count
+            var i = 0
+            while i + 3 < count {
+                guard base[i] == 0, base[i + 1] == 0 else { i += 1; continue }
+                let prefix: Int
+                if base[i + 2] == 1 { prefix = 3 }
+                else if base[i + 2] == 0, base[i + 3] == 1 { prefix = 4 }
+                else { i += 1; continue }
+                let header = i + prefix
+                guard header < count else { return false }
+                let first = base[header]
+                let type = codec == .h264 ? first & 0x1f : (first >> 1) & 0x3f
+                if codec == .h264 ? type == 5 : (16...21).contains(type) { return true }
+                i = header + 1
+            }
+            return false
+        }
+    }
+
     public static func lengthPrefixed(_ units: [Data]) throws -> Data {
         var result = Data()
         for unit in units {

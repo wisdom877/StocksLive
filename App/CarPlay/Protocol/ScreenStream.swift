@@ -52,7 +52,9 @@ public final class ScreenStream {
         } catch { failed = true; buffer = Data(); throw error }
     }
     private static func annexB(_ data: Data) throws -> Data {
-        if data.starts(with: [0, 0, 0, 1]) { _ = try AnnexB.units(in: data); return data }
+        // H264Surface validates and splits the access unit. Avoid a second full
+        // Annex-B pass here on the receiver's serial queue for every frame.
+        if data.starts(with: [0, 0, 0, 1]) { return data }
         var offset = 0, output = Data()
         while offset < data.count {
             guard offset + 4 <= data.count else { throw ProtocolError.malformed(CWL("视频 NAL 长度")) }

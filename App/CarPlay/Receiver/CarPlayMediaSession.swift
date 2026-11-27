@@ -25,6 +25,7 @@ final class CarPlayMediaSession {
     var onLog: ((String) -> Void)?
     var onBrowserAudio: ((Int, AVAudioPCMBuffer, UInt64) -> Void)?
     var onVideo: ((Data, VideoCodec) -> Void)?
+    var onVideoClosed: (() -> Void)?
     init(queue: DispatchQueue, secret: SymmetricKey, peerAddress: String, audioEnabled: Bool, hevc: Bool) {
         self.queue = queue; self.secret = secret; self.peerAddress = peerAddress
         self.audioEnabled = audioEnabled; self.hevc = hevc
@@ -88,7 +89,11 @@ final class CarPlayMediaSession {
                             }
                         } catch { self.onLog?(CWL("视频数据被拒绝：{1}", [String(describing: error)])); throw error }
                     }
-                    connection.onClose = { [weak self] in self?.video = nil; self?.onLog?(CWL("视频通道已关闭")) }
+                    connection.onClose = { [weak self] in
+                        self?.video = nil
+                        self?.onLog?(CWL("视频通道已关闭"))
+                        self?.onVideoClosed?()
+                    }
                     connection.start()
                     self.recoverFirstVideoUnit(on: connection, attempt: 1)
                 }
