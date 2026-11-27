@@ -21,6 +21,10 @@ final class MusicNow: NSObject {
     private var lastArtKey = ""
     private var observed = false
     private var authAsked = false
+    private var lastAct = ""
+    private var lastActAt = 0.0
+    private var songsCache: [MPMediaItem]?
+    private var playlistsCache: [MPMediaPlaylist]?
 
     private var active: MPMusicPlayerController { useQueue ? queue : system }
 
@@ -30,11 +34,18 @@ final class MusicNow: NSObject {
 
     /// 网页来的指令（start / stop / play / pause / toggle / next / prev / seek / refresh / lib / songs / playlist / song）
     func command(_ body: [String: Any]) {
-        DispatchQueue.main.async { self.run(body) }
+        DispatchQueue.main.async {
+            // 音乐页连点会排队很多次 MediaPlayer 调用；自动释放池避免解码/封面对象堆积。
+            autoreleasepool { self.run(body) }
+        }
     }
 
     private func run(_ body: [String: Any]) {
         guard let act = body["act"] as? String else { return }
+        // 同一动作 280ms 内只执行一次，既保留点按手感，又不会被连点拖死主线程。
+        let now = ProcessInfo.processInfo.systemUptime
+        if act != "seek", act == lastAct, now - lastActAt < 0.28 { return }
+        lastAct = act; lastActAt = now
         switch act {
         case "start":   start()
         case "stop":    timer?.invalidate(); timer = nil
@@ -98,6 +109,21 @@ final class MusicNow: NSObject {
 
     /* ---------- 资料库：播放列表 / 全部歌曲 ---------- */
 
+    /// MPMediaQuery 的同步扫描在主线程上很贵；连点列表/歌曲时缓存一次，避免 watchdog。
+    private func playlists() -> [MPMediaPlaylist] {
+        if let playlistsCache { return playlistsCache }
+        let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
+        playlistsCache = lists
+        return lists
+    }
+
+    private func songs() -> [MPMediaItem] {
+        if let songsCache { return songsCache }
+        let items = MPMediaQuery.songs().items ?? []
+        songsCache = items
+        return items
+    }
+
     private func libraryReady() -> Bool {
         MPMediaLibrary.authorizationStatus() == .authorized
     }
@@ -108,7 +134,7 @@ final class MusicNow: NSObject {
             push("window.sbMusicLib && window.sbMusicLib({\"auth\":\"\(authText())\",\"playlists\":[]});")
             return
         }
-        let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
+        let lists = playlists()
         var arr: [[String: Any]] = []
         for pl in lists {
             guard let name = pl.value(forProperty: MPMediaPlaylistPropertyName) as? String, !name.isEmpty else { continue }
@@ -133,7 +159,7 @@ final class MusicNow: NSObject {
             push("window.sbMusicSongs && window.sbMusicSongs({\"auth\":\"\(authText())\",\"songs\":[]});")
             return
         }
-        let items = MPMediaQuery.songs().items ?? []
+        let items = songs()
         var arr: [[String: Any]] = []
         for it in items {
             guard let title = it.title, !title.isEmpty else { continue }
@@ -171,7 +197,7 @@ final class MusicNow: NSObject {
 
     private func playPlaylist(_ raw: String) {
         guard let pid = UInt64(raw.trimmingCharacters(in: .whitespaces)) else { return }
-        let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
+        let lists = playlists()
         guard let pl = lists.first(where: { $0.persistentID == pid }) else { return }
         playItems(pl.items)
     }
@@ -182,7 +208,7 @@ final class MusicNow: NSObject {
             push("window.sbMusicTracks && window.sbMusicTracks({\"tracks\":[]});")
             return
         }
-        let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
+        let lists = playlists()
         guard let pl = lists.first(where: { $0.persistentID == pid }) else {
             push("window.sbMusicTracks && window.sbMusicTracks({\"tracks\":[]});")
             return
@@ -208,7 +234,7 @@ final class MusicNow: NSObject {
     private func playPlaylistTrack(_ body: [String: Any]) {
         guard let listRaw = body["list"] as? String, let pid = UInt64(listRaw),
               let trackRaw = body["track"] as? String, let tid = UInt64(trackRaw) else { return }
-        let lists = (MPMediaQuery.playlists().collections ?? []).compactMap { $0 as? MPMediaPlaylist }
+        let lists = playlists()
         guard let pl = lists.first(where: { $0.persistentID == pid }) else { return }
         let items = pl.items
         guard let startItem = items.first(where: { $0.persistentID == tid }) ?? items.first else { return }
@@ -226,7 +252,7 @@ final class MusicNow: NSObject {
 
     private func playSong(_ raw: String) {
         guard let pid = UInt64(raw.trimmingCharacters(in: .whitespaces)) else { return }
-        let items = MPMediaQuery.songs().items ?? []
+        let items = songs()
         guard let it = items.first(where: { $0.persistentID == pid }) else { return }
         playItems([it])
     }

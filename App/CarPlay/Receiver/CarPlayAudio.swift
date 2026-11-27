@@ -32,8 +32,10 @@ private final class AudioDatagramPort {
                 var peer = sockaddr_in(); var size = socklen_t(MemoryLayout<sockaddr_in>.size)
                 let length = withUnsafeMutablePointer(to: &peer) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(fd, &bytes, 65536, 0, $0, &size) } }
                 guard length > 0 else { break }
-                guard peer.sin_addr.s_addr == allowed.s_addr else { continue }
-                self.onPacket?(Data(bytes.prefix(length)))
+                // RTSP 与音频可能从不同网卡/地址回包；端口本身是本次会话临时协商的，
+                // 不再按 RTSP 源地址过滤，避免音频全被丢掉、画面正常但一直没声音。
+                _ = peer
+                autoreleasepool { _ = self.onPacket?(Data(bytes.prefix(length))) }
             }
         }
         source.setCancelHandler { close(fd) }; source.resume()
@@ -147,6 +149,8 @@ final class CarPlayAudio {
                     engine = AVAudioEngine()
                     let player = AVAudioPlayerNode()
                     engine.attach(player); engine.connect(player, to: engine.mainMixerNode, format: output)
+                    engine.mainMixerNode.outputVolume = 1
+                    player.volume = 1
                     self.engine = engine; self.player = player
                 }
                 do { try engine.start() } catch {
@@ -280,7 +284,11 @@ final class NativeAudioDecoder {
     private var compressed: AVAudioFormat?
     init(format: ReceiverAudioFormat) throws {
         self.format = format
-        output = AVAudioFormat(standardFormatWithSampleRate: Double(format.sampleRate), channels: AVAudioChannelCount(format.channels))!
+        guard format.sampleRate > 0, format.channels > 0,
+              let standard = AVAudioFormat(standardFormatWithSampleRate: Double(format.sampleRate), channels: AVAudioChannelCount(format.channels)) else {
+            throw ProtocolError.malformed(CWL("音频输出格式不可用"))
+        }
+        output = standard
         if format.isAAC || format.isOpus {
             var description = AudioStreamBasicDescription(mSampleRate: Double(format.sampleRate), mFormatID: format.isOpus ? kAudioFormatOpus : kAudioFormatMPEG4AAC,
                 mFormatFlags: format.isOpus ? 0 : 2, mBytesPerPacket: 0, mFramesPerPacket: format.isOpus ? UInt32(format.sampleRate / 50) : 1024, mBytesPerFrame: 0,
