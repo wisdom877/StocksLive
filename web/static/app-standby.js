@@ -3,6 +3,7 @@
    时长和退出待机的长按一致，手感统一。 */
 var SB_MID_HOLD = 1200;
 var sbMidHeld = false;
+var SB_DIM_AFTER = 30000;            // 待机闲置 30 秒后降亮，碰一下立刻恢复
 
 /* 长按进入待机的手感：越接近闭合，脉冲越密、越重；闭合那一下单独来一记重击。
    iPhone 壳里走 wkHaptic（UIImpactFeedbackGenerator），没有桥接的浏览器不硬震。 */
@@ -149,7 +150,7 @@ function sbState() {
   if (!state.sb) {
     state.sb = {
       built: false, on: false, page: 0, flip: false, land: false, pinned: false, pinTimer: null, swipeTimer: null,
-      day: "", tickTimer: null, idleTimer: null,
+      day: "", tickTimer: null, idleTimer: null, dimTimer: null, dimmed: false,
       wx: null, wxAt: 0, work: null, workAt: 0,
       awake: (function () { try { return localStorage.getItem("sbAwake") !== "0"; } catch (e) { return true; } })(),
       awakeTimer: null,
@@ -223,8 +224,11 @@ function sbCarPlaySubmit() {
 function sbCarPlaySet(state, message) {
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
   if (!page) return;
+  const prev = page.dataset.cp;
   page.dataset.cp = state;
   page.classList.toggle("sb-cp-live", state === "video");
+  const box = $("#sb");
+  if (box) box.classList.toggle("sb-cp-video", state === "video");
   const hint = $("#sb-cp-hint");
   if (hint) {
     let text = "长按 Hello 进入 CarPlay";
@@ -237,24 +241,46 @@ function sbCarPlaySet(state, message) {
     hint.textContent = text;
   }
   if (state !== "credentials") sbCarPlaySheet(false);
+  if (state === "failed" && prev !== "failed") sbCarPlayFailHaptic();
+}
+
+/* 连接失败：三记短促重击，明显区别于成功时的那一下收尾 */
+function sbCarPlayFailHaptic() {
+  if (typeof window.wkHaptic === "function") {
+    [[0, 0.78], [140, 1], [320, 0.72]].forEach(([ms, i]) => {
+      setTimeout(() => { try { window.wkHaptic("heavy", i); } catch (e) {} }, ms);
+    });
+    return;
+  }
+  if (!window.wkNativeCap && navigator.vibrate) {
+    try { navigator.vibrate([28, 55, 28, 55, 28]); } catch (e) {}
+  }
 }
 
 /* 第 7 页的 Hello 长按进入：不叠按钮，长按 1 秒才算数 */
 function sbBindHelloHold() {
   const h = $("#sb-cp-hello");
   if (!h) return;
-  let timer = 0, pid = null;
+  // 只有压在 Hello 标题上才算；整页空白不再响应长按
+  const hit = h.querySelector(".sb-hello-t") || h;
+  let timer = 0, pid = null, hapticTimers = [];
   const cancel = () => {
     clearTimeout(timer); timer = 0; pid = null;
+    hapticTimers.forEach(clearTimeout); hapticTimers = [];
     h.classList.remove("press");
   };
   const begin = (e, id) => {
     if (pid !== null) return;
     e.preventDefault();
     pid = id;
-    if (typeof id === "number") { try { h.setPointerCapture(id); } catch (err) {} }
+    if (typeof id === "number") { try { hit.setPointerCapture(id); } catch (err) {} }
     h.classList.add("press");
     clearTimeout(timer);
+    hapticTimers.forEach(clearTimeout);
+    // 和顶栏「待机」同一套渐强节奏，只是 1 秒走完：越接近触发越密越重，最后一记重击。
+    hapticTimers = SB_MID_HAPTIC.map((step) => setTimeout(() => {
+      if (pid !== null) sbHoldHaptic(step.style, step.i);
+    }, step.p * 1000));
     timer = setTimeout(() => {
       timer = 0; pid = null;
       h.classList.remove("press");
@@ -264,13 +290,13 @@ function sbBindHelloHold() {
       sbCarPlayStart();
     }, 1000);
   };
-  h.addEventListener("pointerdown", (e) => begin(e, e.pointerId));
-  h.addEventListener("touchstart", (e) => begin(e, "touch"), { passive: false });
-  h.addEventListener("pointerup", (e) => { if (pid === null || e.pointerId === pid) cancel(); });
-  h.addEventListener("pointercancel", cancel);
-  h.addEventListener("touchend", () => { if (pid === "touch") cancel(); }, { passive: true });
-  h.addEventListener("touchcancel", () => { if (pid === "touch") cancel(); }, { passive: true });
-  h.addEventListener("contextmenu", (e) => e.preventDefault());
+  hit.addEventListener("pointerdown", (e) => begin(e, e.pointerId));
+  hit.addEventListener("touchstart", (e) => begin(e, "touch"), { passive: false });
+  hit.addEventListener("pointerup", (e) => { if (pid === null || e.pointerId === pid) cancel(); });
+  hit.addEventListener("pointercancel", cancel);
+  hit.addEventListener("touchend", () => { if (pid === "touch") cancel(); }, { passive: true });
+  hit.addEventListener("touchcancel", () => { if (pid === "touch") cancel(); }, { passive: true });
+  hit.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
 window.wkCarPlayState = function (payload) {
@@ -298,9 +324,11 @@ function sbCarPlayPage(idx) {
   if (box) box.classList.toggle("sb-cp-page", idx === 6);
   if (idx === 6) {
     sbCarPlayMsg({ cmd: "geometry", flip: box && box.classList.contains("sb-flip") ? 1 : 0 });
+    sbDimOff();
   } else if (SB_CP_LAST === 6) {
     sbCarPlayMsg({ cmd: "stop" });
     sbCarPlaySheet(false);
+    sbDimArm();
   }
   SB_CP_LAST = idx;
 }
@@ -1064,6 +1092,7 @@ function sbClose(instant) {
   sbPaintPin();
   if (SB_CP_LAST === 6) sbCarPlayMsg({ cmd: "stop" });
   s.on = false;
+  sbDimOff();
   sbOrient(0);
   if (typeof muSend === "function") muSend("stop");
   setTimeout(() => sbOrient(0), 600);   // 退出时也补一拍，别停在横屏里看竖屏页面
@@ -1106,8 +1135,8 @@ function sbStopTimers() {
 function sbVis() {
   const s = sbState();
   if (!s.on) return;
-  if (document.hidden) sbStopTimers();
-  else { sbStartTimers(); sbPaintAll(); }
+  if (document.hidden) { sbDimOff(); sbStopTimers(); }
+  else { sbStartTimers(); sbPaintAll(); sbIdleReset(); }
 }
 
 function sbKey(e) {
@@ -1305,14 +1334,38 @@ function sbTap(e) {
   sbIdleReset();
 }
 
+/* 闲置降亮：CarPlay 页除外；任何操作都先还原，再重新计时。 */
+function sbDimOff() {
+  const s = sbState();
+  clearTimeout(s.dimTimer); s.dimTimer = null;
+  if (!s.dimmed) return;
+  s.dimmed = false;
+  try { if (window.wkBrightness) window.wkBrightness(false); } catch (e) {}
+}
+
+function sbDimArm() {
+  const s = sbState();
+  clearTimeout(s.dimTimer); s.dimTimer = null;
+  if (!s.on || s.page === 6) { sbDimOff(); return; }
+  s.dimTimer = setTimeout(() => {
+    s.dimTimer = null;
+    if (!s.on || s.page === 6 || document.hidden) return;
+    if (typeof window.wkBrightness !== "function") return;
+    s.dimmed = true;
+    try { window.wkBrightness(true); } catch (e) { s.dimmed = false; }
+  }, SB_DIM_AFTER);
+}
+
 function sbIdleReset() {
   const s = sbState();
   clearTimeout(s.idleTimer);
+  sbDimOff();
   const box = $("#sb");
   if (box) box.classList.remove("sb-incog");
   s.idleTimer = setTimeout(() => {
     if (s.on) $("#sb").classList.add("sb-incog");
   }, 5000);
+  sbDimArm();
 }
 
 function sbMidTap(e) {

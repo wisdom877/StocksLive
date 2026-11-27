@@ -37,7 +37,14 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     (function () {
       if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.dndLive) return;
       // 告诉网页这一版壳支持哪些能力，网页据此决定怎么响应铃，老壳自动降级
-      window.wkNativeCap = { ring: 1, vibe: 1, haptic: 1 };
+      window.wkNativeCap = { ring: 1, vibe: 1, haptic: 1, dim: 1 };
+      // 待机闲置降亮：on=true 降到约 28%，on=false 恢复进入前的亮度
+      window.wkBrightness = function (on) {
+        try {
+          window.webkit.messageHandlers.wkNative.postMessage({ cmd: "screenDim", on: !!on });
+          return true;
+        } catch (e) { return false; }
+      };
       // 长按进度的分级触感：style = light / medium / heavy / final，intensity = 0...1
       window.wkHaptic = function (style, intensity) {
         try {
@@ -417,6 +424,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             let style = (dict["style"] as? String) ?? ""
             let intensity = (dict["intensity"] as? NSNumber)?.doubleValue ?? 0
             playHaptic(style: style, intensity: intensity)
+        case "screenDim":
+            setStandbyDim((dict["on"] as? Bool) ?? false)
         case "tone":
             playTone(loop: (dict["loop"] as? Bool) ?? false)
         case "ring":
@@ -675,6 +684,48 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         try s.setActive(true)
     }
 
+    /// 闲置降亮：只改 UIScreen 亮度，不动系统设置；记住进入前的值，唤醒 / 退出待机时还原。
+    private func setStandbyDim(_ on: Bool) {
+        if on {
+            guard UIApplication.shared.applicationState == .active else { return }
+            if standbyBrightness == nil { standbyBrightness = UIScreen.main.brightness }
+            guard let base = standbyBrightness else { return }
+            let target = min(base, max(0.05, base * 0.28))
+            rampBrightness(to: target, duration: 0.8)
+        } else {
+            guard let base = standbyBrightness else { return }
+            standbyBrightness = nil
+            rampBrightness(to: base, duration: 0.28)
+        }
+    }
+
+    private func rampBrightness(to target: CGFloat, duration: TimeInterval) {
+        brightnessRampTimer?.invalidate()
+        let start = UIScreen.main.brightness
+        guard abs(target - start) > 0.002 else {
+            UIScreen.main.brightness = target
+            brightnessRampTimer = nil
+            return
+        }
+        let began = Date()
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            let p = min(1, Date().timeIntervalSince(began) / duration)
+            UIScreen.main.brightness = start + (target - start) * CGFloat(p)
+            if p >= 1 {
+                t.invalidate()
+                self.brightnessRampTimer = nil
+            }
+        }
+        brightnessRampTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    deinit {
+        brightnessRampTimer?.invalidate()
+        if let standbyBrightness { UIScreen.main.brightness = standbyBrightness }
+    }
+
     /// 长按进度的分级触感。final 在重击之后再叠一记系统长震，作为「闭合」的落点。
     private func playHaptic(style rawStyle: String, intensity rawIntensity: Double) {
         let name = rawStyle.lowercased()
@@ -714,8 +765,13 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         }
     }
     private var standbyPlayer: AVAudioPlayer?
+    private var standbyBrightness: CGFloat?
+    private var brightnessRampTimer: Timer?
 
-    @objc private func enterBackground() { syncStandbyPlayer() }
+    @objc private func enterBackground() {
+        setStandbyDim(false)          // 切后台先还原系统亮度，别把整块屏留在暗档
+        syncStandbyPlayer()
+    }
     @objc private func enterForeground() {
         syncStandbyPlayer()
         reportNativeState()   // 回到前台把权限 / 已排条数刷新给页面

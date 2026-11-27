@@ -4330,8 +4330,9 @@ html[data-theme="light"] #sb{
 /* CarPlay 极简激活页：只留一句 Hello，液态玻璃流光 */
 #sb .sb-cp{display:flex;align-items:center;justify-content:center;padding:0}
 #sb .sb-cp-box{display:none}
-#sb .sb-hello{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:0 calc(var(--sb-u) * 40px)}
+#sb .sb-hello{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:0 calc(var(--sb-u) * 40px);pointer-events:none}
 #sb .sb-hello-t{position:relative;display:inline-block;font-size:calc(var(--sb-u) * 64px);font-weight:600 !important;
+  pointer-events:auto;-webkit-touch-callout:none;user-select:none;touch-action:none;
   letter-spacing:-.045em;line-height:1;white-space:nowrap;
   background:linear-gradient(104deg,#ffffff 0%,#9fc0ff 22%,#f0a6ff 42%,#ffffff 60%,#9fc0ff 80%,#ffffff 100%);
   background-size:260% 100%;-webkit-background-clip:text;background-clip:text;
@@ -4480,3 +4481,8 @@ html[data-theme="light"] #sb{--sb-1:#000;--sb-2:rgba(0,0,0,.88);--sb-3:rgba(0,0,
 #sb .sb-cal-wk i,#sb #sb-cal-meta>div,#sb .sb-day-s2,#sb .sb-grid-h{color:var(--sb-2)}
 #sb .sb-focus{color:var(--sb-1);font-weight:600}
 #sb .sb-focus span{font-weight:600}
+
+/* CarPlay 画面接通后：返回 / 固定 / 翻转始终留在画面上，不被固定态或翻页让位规则淡出 */
+#sb.sb-cp-video .sb-back,
+#sb.sb-cp-video .sb-pin,
+#sb.sb-cp-video .sb-flip{opacity:1 !important;visibility:visible !important}
