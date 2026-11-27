@@ -31,14 +31,25 @@ jobs:
       - uses: actions/checkout@v4
       - name: 安装 xcodegen
         run: brew install xcodegen
-      - name: 构建未签名 ipa
+      - name: 构建未签名 iPhone ipa
         env:
           CARPLAY_CERT_B64: ${{ secrets.CARPLAY_CERT_B64 }}
           CARPLAY_LEAF_B64: ${{ secrets.CARPLAY_LEAF_B64 }}
           CARPLAY_KEY_B64: ${{ secrets.CARPLAY_KEY_B64 }}
-        run: chmod +x build-ipa.sh && ./build-ipa.sh
+        run: chmod +x build-ipa.sh && ./build-ipa.sh StocksLive
+      - name: 构建未签名 iPad HD ipa
+        env:
+          CARPLAY_CERT_B64: ${{ secrets.CARPLAY_CERT_B64 }}
+          CARPLAY_LEAF_B64: ${{ secrets.CARPLAY_LEAF_B64 }}
+          CARPLAY_KEY_B64: ${{ secrets.CARPLAY_KEY_B64 }}
+        run: ./build-ipa.sh StocksLiveHD
       - uses: actions/upload-artifact@v4
         with:
           name: StocksLive-unsigned-ipa
           path: build/StocksLive-unsigned.ipa
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StocksLiveHD-unsigned-ipa
+          path: build/StocksLiveHD-unsigned.ipa
           retention-days: 14

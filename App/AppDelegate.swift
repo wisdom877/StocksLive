@@ -2,7 +2,7 @@ import UIKit
 import UserNotifications
 
 @main
-final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+final class AppDelegate: UIResponder, UIApplicationDelegate, OrientationControlling, UNUserNotificationCenterDelegate {
     var window: UIWindow?
     private weak var web: WebViewController?
     /// 默认竖屏；待机页打开时切成横屏，退出待机再切回来

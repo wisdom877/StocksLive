@@ -83,6 +83,17 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     })();
     """
 
+    /// 只有 HD target 会注入这个标记：网页据此加载 style-hd.css、切换 iPad 布局。
+    /// iPhone target 的这段编译结果为空字符串，网页完全收不到任何 HD 信号。
+    #if HD_BUILD
+    private static let layoutJS: String = """
+    window.wkHD = true;
+    try { document.documentElement.classList.add('wk-hd'); } catch (e) {}
+    """
+    #else
+    private static let layoutJS: String = ""
+    #endif
+
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
         pushSafeArea()
@@ -115,7 +126,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         conf.userContentController.add(self, name: "wkNative")
         conf.userContentController.add(self, name: "wkCarPlay")
         conf.userContentController.addUserScript(
-            WKUserScript(source: Self.bridgeJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+            WKUserScript(source: Self.bridgeJS + Self.layoutJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
         conf.allowsInlineMediaPlayback = true
 
@@ -406,7 +417,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         case "orient":
             // 待机固定横屏、应用固定竖屏。由网页在 sbOpen/sbClose 时通知
             let on = (dict["on"] as? Int) ?? ((dict["on"] as? Bool) == true ? 1 : 0)
-            (UIApplication.shared.delegate as? AppDelegate)?.setLandscape(on != 0)
+            (UIApplication.shared.delegate as? OrientationControlling)?.setLandscape(on != 0)
         case "awake":
             // 待机页右上角呼吸点涨到最大时打过来一次：打开/关掉系统的自动锁屏。
             // 网页侧拦不住 iOS 的自动暗屏，只有这里把 isIdleTimerDisabled 打开才真正常亮。

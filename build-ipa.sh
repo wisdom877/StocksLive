@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 # 一条命令产出未签名 ipa（在 macOS + Xcode 15 上跑）
-#   ./build-ipa.sh            # 默认 Release，未签名
-# 产物：build/StocksLive-unsigned.ipa
+#   ./build-ipa.sh                 # iPhone，默认 Release，未签名 → build/StocksLive-unsigned.ipa
+#   ./build-ipa.sh StocksLiveHD    # iPad HD，独立 target → build/StocksLiveHD-unsigned.ipa
 set -euo pipefail
 cd "$(dirname "$0")"
+
+SCHEME="${1:-StocksLive}"
+PRODUCT="$SCHEME"
+if [ "$SCHEME" = "StocksLiveHD" ]; then
+  OUT="StocksLiveHD-unsigned"
+else
+  OUT="StocksLive-unsigned"
+fi
 
 if ! command -v xcodegen >/dev/null 2>&1; then
   echo "缺 xcodegen：先跑  brew install xcodegen" >&2
@@ -27,22 +35,24 @@ fi
 
 xcodegen generate
 
-rm -rf build
+rm -rf "build/$SCHEME.xcarchive"
+rm -rf build/Payload
+rm -f "build/$OUT.ipa"
 mkdir -p build
 
 xcodebuild \
   -project StocksLive.xcodeproj \
-  -scheme StocksLive \
+  -scheme "$SCHEME" \
   -configuration Release \
   -sdk iphoneos \
   -destination 'generic/platform=iOS' \
-  -archivePath build/StocksLive.xcarchive \
+  -archivePath "build/$SCHEME.xcarchive" \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY="" \
   archive
 
-APP="build/StocksLive.xcarchive/Products/Applications/StocksLive.app"
+APP="build/$SCHEME.xcarchive/Products/Applications/$PRODUCT.app"
 test -d "$APP"
 
 rm -rf build/Payload
@@ -52,7 +62,7 @@ cp -R "$APP" build/Payload/
 # 手表上（锁屏卡的镜像、表盘列表）取图标走的是包根目录的传统尺寸 PNG + CFBundleIcons，
 # Xcode 15 起默认只导出 60x60@2x 一个，手表拿不到就显示通用网格图标。
 # 这里把 29 / 40 / 60 三档补到包根目录，并写进 Info.plist（Assets.car 原样保留，手机桌面不受影响）
-BUNDLE="build/Payload/StocksLive.app"
+BUNDLE="build/Payload/$PRODUCT.app"
 ICONS="App/Assets.xcassets/AppIcon.appiconset"
 for pair in \
   "icon-29-29@2x.png:AppIcon29x29@2x.png" \
@@ -75,8 +85,8 @@ PLIST="$BUNDLE/Info.plist"
 echo "包内图标："; ls "$BUNDLE" | grep -i icon
 
 cd build
-ditto -c -k --sequesterRsrc --keepParent Payload StocksLive-unsigned.ipa
+ditto -c -k --sequesterRsrc --keepParent Payload "$OUT.ipa"
 cd ..
 
-echo "✅ 产物：$(pwd)/build/StocksLive-unsigned.ipa"
+echo "✅ 产物：$(pwd)/build/$OUT.ipa"
 echo "   自签：Sideloadly / AltStore / Xcode Devices 都可以；扩展会自动跟着签。"
