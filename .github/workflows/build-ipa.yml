@@ -13,8 +13,13 @@ jobs:
       - name: 安装 xcodegen
         run: brew install xcodegen
       - name: 构建未签名 ipa
+        env:
+          CARPLAY_CERT_B64: ${{ secrets.CARPLAY_CERT_B64 }}
+          CARPLAY_LEAF_B64: ${{ secrets.CARPLAY_LEAF_B64 }}
+          CARPLAY_KEY_B64: ${{ secrets.CARPLAY_KEY_B64 }}
         run: chmod +x build-ipa.sh && ./build-ipa.sh
       - uses: actions/upload-artifact@v4
         with:
           name: StocksLive-unsigned-ipa
           path: build/StocksLive-unsigned.ipa
+          retention-days: 3

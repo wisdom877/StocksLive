@@ -29,15 +29,24 @@
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
 	</dict>
-		<key>NSBluetoothAlwaysUsageDescription</key>
-		<string>连接蓝牙心率设备（心率带 / 手表广播的心率）以便在待机屏实时显示心率</string>
-		<key>NSAppleMusicUsageDescription</key>
+	<key>NSAppleMusicUsageDescription</key>
 	<string>读取当前正在播放的曲目信息，用来在应用里显示播放器和歌词。</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>连接蓝牙心率设备（心率带 / 手表广播的心率）以便在待机屏实时显示心率</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_airplay._tcp</string>
+		<string>_tds-carkit._tcp</string>
+	</array>
 	<key>NSHealthShareUsageDescription</key>
 	<string>读取心率、活动能量、步数、睡眠等训练数据，用于待机页与体能训练页展示，不上传给药疗用途。</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>本应用不写入健康数据，仅在你授权后读取。</string>
-<key>NSSupportsLiveActivities</key>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>通过同一 Wi-Fi 连接本机 CarPlay 会话，并发布发现服务</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>CarPlay 的通话与 Siri 使用麦克风；可以在 CarPlay 里不启用语音功能</string>
+	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
 	<true/>

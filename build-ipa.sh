@@ -14,6 +14,17 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
   exit 1
 fi
 
+# CarPlay 配件身份：不入库。CI 用 secret 注入，本地直接用 App/CarPlay/Identity/ 里的文件。
+IDENTITY_DIR="App/CarPlay/Identity"
+mkdir -p "$IDENTITY_DIR"
+decode_b64() { python3 -c 'import sys,base64,pathlib; pathlib.Path(sys.argv[1]).write_bytes(base64.b64decode(sys.stdin.read().strip()))' "$1"; }
+if [ -n "${CARPLAY_CERT_B64:-}" ]; then printf '%s' "$CARPLAY_CERT_B64" | decode_b64 "$IDENTITY_DIR/certificate.p7b"; fi
+if [ -n "${CARPLAY_LEAF_B64:-}" ]; then printf '%s' "$CARPLAY_LEAF_B64" | decode_b64 "$IDENTITY_DIR/leaf.cer"; fi
+if [ -n "${CARPLAY_KEY_B64:-}" ]; then printf '%s' "$CARPLAY_KEY_B64" | decode_b64 "$IDENTITY_DIR/private.x963"; fi
+if [ ! -f "$IDENTITY_DIR/certificate.p7b" ] || [ ! -f "$IDENTITY_DIR/leaf.cer" ] || [ ! -f "$IDENTITY_DIR/private.x963" ]; then
+  echo "⚠️  App/CarPlay/Identity 缺文件：能编译，但启动 CarPlay 会提示「配件身份缺失」。" >&2
+fi
+
 xcodegen generate
 
 rm -rf build

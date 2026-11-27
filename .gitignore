@@ -1,0 +1,5 @@
+build/
+DerivedData/
+*.xcarchive
+App/CarPlay/Identity/*
+!App/CarPlay/Identity/.gitkeep

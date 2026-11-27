@@ -21,6 +21,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     private var webView: WKWebView!
+    private var carPlay: CarPlayCoordinator?
     // 优先走有证书的域名（HTTPS），证书有效，不会被 ATS 拦、也不吃运营商对 80 端口的限制
     private let homeURL = URL(string: "https://api.wisdomhqq.top/stocks/")!
     private let fallbackURL = URL(string: "http://106.53.132.252/stocks/")!
@@ -65,6 +66,12 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
         pushSafeArea()
+        carPlay?.relayout()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        carPlay?.relayout()
     }
 
     override func viewDidLoad() {
@@ -86,6 +93,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         conf.allowsInlineMediaPlayback = true
         conf.userContentController.add(self, name: "dndLive")
         conf.userContentController.add(self, name: "wkNative")
+        conf.userContentController.add(self, name: "wkCarPlay")
         conf.userContentController.addUserScript(
             WKUserScript(source: Self.bridgeJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
@@ -102,6 +110,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         webView.scrollView.backgroundColor = .systemBackground
         webView.underPageBackgroundColor = .systemBackground
         view.addSubview(webView)
+        carPlay = CarPlayCoordinator(host: self, webView: webView)
+        carPlay?.onIdleAudio = { [weak self] in self?.idleAudioSession() }
         HealthBridge.shared.attach(webView)
         BleHeart.shared.attach(webView)   // 蓝牙心率：手表/心率带广播的标准心率服务
         MusicNow.shared.attach(webView)   // 正在播放：镜像系统「音乐」App（不碰 DRM）
@@ -298,6 +308,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage) {
         if message.name == "wkNative" { handleNative(message.body); return }
+        if message.name == "wkCarPlay" {
+            if let body = message.body as? [String: Any] { carPlay?.handle(body) }
+            return
+        }
         guard let body = message.body as? [String: Any], let cmd = body["cmd"] as? String else { return }
         guard #available(iOS 16.1, *) else { return }
 
