@@ -273,18 +273,22 @@ final class CarPlayCoordinator: NSObject {
         let stageFrame = stage.frame
         let safeRight = bounds.maxX - inset.right
         let bandWidth = max(0, safeRight - stageFrame.maxX)
-        let railWidth = min(112, max(76, bandWidth - 16))
+        // 右侧黑边在 16:9 画面之外通常只有 120pt 左右：右边留 12、卡与画面之间留 6，
+        // 卡宽就按这条带子实际可用宽度来收，不能再用固定 8pt 间隙把自己挤出画面外。
+        let railSide: CGFloat = 12
+        let railGap: CGFloat = 6
+        let railWidth = min(112, max(76, bandWidth - railSide - railGap))
         let railTop = inset.top + 58          // 给右上角关闭键留出安全距离
         let railBottom = bounds.maxY - inset.bottom - 12
         let railHeight = min(228, max(180, railBottom - railTop))
-        let railRight = safeRight - 14
+        let railRight = safeRight - railSide
         let railCenterX = railRight - railWidth / 2
         heartRail.bounds = CGRect(x: 0, y: 0, width: railWidth, height: railHeight)
         heartRail.center = CGPoint(x: railCenterX, y: railTop + railHeight / 2)
         heartRail.transform = .identity
-        // 右边黑边不够宽时整张卡收起，宁可没有也不压 CarPlay 画面。
+        // 右侧带子真的太窄时才收起，避免压住 CarPlay 画面。
         railAllowed = (rotation == 0 || rotation == .pi)
-            && (railCenterX - railWidth / 2) >= stageFrame.maxX + 8
+            && (railCenterX - railWidth / 2) >= stageFrame.maxX + railGap - 1
         syncHeartRailVisibility()
 
         // 和左上返回键对称：叉号放在 CarPlay 圆角界面之外的右侧留白，右 16、上 10
