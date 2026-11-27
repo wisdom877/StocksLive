@@ -185,7 +185,18 @@ final class MusicNow: NSObject {
     /// 结果就是界面在播、车里/手机上都没声。这里和接收端一样把输出拉回物理扬声器。
     private func activatePlaybackSession() {
         let s = AVAudioSession.sharedInstance()
-        let onCarAudio = s.currentRoute.outputs.contains { $0.portType == .carAudio }
+        let outputs = s.currentRoute.outputs.map { $0.portType }
+        // 外接蓝牙/耳机/AirPlay 优先：只要手机已经连着可出声的外设，就不要抢回本机扬声器。
+        let external: Set<AVAudioSession.Port> = [.bluetoothA2DP, .bluetoothLE, .bluetoothHFP,
+                                                  .airPlay, .headphones, .usbAudio, .lineOut]
+        if outputs.contains(where: { external.contains($0) }) {
+            try? s.setCategory(.playback, mode: .default,
+                               options: [.allowBluetoothA2DP, .allowAirPlay])
+            try? s.setActive(true)
+            try? s.overrideOutputAudioPort(.none)
+            return
+        }
+        let onCarAudio = outputs.contains(.carAudio)
         guard onCarAudio else {
             try? s.setCategory(.playback, mode: .default, options: [])
             try? s.setActive(true)

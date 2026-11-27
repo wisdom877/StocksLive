@@ -119,17 +119,28 @@ final class CarPlayAudio {
                 retryPlaybackAt = now + 0.5
                 #if os(iOS)
                 let session = AVAudioSession.sharedInstance()
+                let external = Self.hasExternalAudio(session)
                 let needsDuplexCategory = microphone != nil || Self.hasSpeakerOverride
                 var options: AVAudioSession.CategoryOptions = needsDuplexCategory ? [.defaultToSpeaker] : []
+                if external {
+                    // 蓝牙耳机/车机/音响在连着时，允许 A2DP/AirPlay，保持系统选中的外设，不 override。
+                    options.insert(.allowBluetoothA2DP)
+                    options.insert(.allowAirPlay)
+                }
                 if BackgroundKeepAlive.holdsAudioSession { options.insert(.mixWithOthers) }
                 let category: AVAudioSession.Category = needsDuplexCategory ? .playAndRecord : .playback
                 if session.category != category || session.mode != .default || session.categoryOptions != options {
                     try session.setCategory(category, mode: .default, options: options)
                 }
                 try session.setActive(true)
-                if session.currentRoute.outputs.contains(where: { $0.portType == .carAudio }) {
-                    // In the same-device session CarAudio is our own virtual CarPlay receiver.
-                    // Feeding decoded audio back into that route leaves the physical speaker silent.
+                if external {
+                    if Self.hasSpeakerOverride {
+                        try? session.overrideOutputAudioPort(.none)
+                        Self.hasSpeakerOverride = false
+                    }
+                    onLog?(CWL("本机音频跟随已连接蓝牙/耳机外设"))
+                } else if session.currentRoute.outputs.contains(where: { $0.portType == .carAudio }) {
+                    // 只有虚拟 CarAudio、没有任何外接蓝牙时，才回落到物理扬声器。
                     if session.category != .playAndRecord {
                         try session.setCategory(.playAndRecord, mode: .default, options: options.union(.defaultToSpeaker))
                     }
