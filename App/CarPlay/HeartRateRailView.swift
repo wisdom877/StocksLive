@@ -18,6 +18,8 @@ final class HeartRateRailView: UIView {
     private var currentBpm: Int?
     private var level: CGFloat = 0
     private var lastPulseBpm: Int?
+    /// 有/无真实心率时通知宿主显示或收起，避免留一个空胶囊。
+    var onAvailabilityChanged: ((Bool) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -138,11 +140,15 @@ final class HeartRateRailView: UIView {
 
     func refresh() {
         let bpm = HeartRateCenter.shared.current()
+        let hadBpm = currentBpm != nil
         if bpm != currentBpm {
             currentBpm = bpm
             level = bpm.map { min(1, max(0, CGFloat($0 - 40) / 150)) } ?? 0
             paint()
             setNeedsLayout()
+        }
+        if (bpm != nil) != hadBpm {
+            onAvailabilityChanged?(bpm != nil)
         }
         if let bpm, bpm != lastPulseBpm {
             lastPulseBpm = bpm

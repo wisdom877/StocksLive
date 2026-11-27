@@ -39,6 +39,7 @@ final class CarPlayCoordinator: NSObject {
     private var active = false
     private var resolvingSSID = false
     private var displayedVideo = false
+    private var railAllowed = false
     private var flip = false
     private var orientationObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
@@ -54,6 +55,9 @@ final class CarPlayCoordinator: NSObject {
         super.init()
         lastSSID = UserDefaults.standard.string(forKey: Self.ssidKey)
         configureStage()
+        heartRail.onAvailabilityChanged = { [weak self] _ in
+            self?.syncHeartRailVisibility(animated: true)
+        }
         orientationObserver = NotificationCenter.default.addObserver(forName: UIDevice.orientationDidChangeNotification,
             object: nil, queue: .main) { [weak self] _ in self?.relayout() }
         backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification,
@@ -276,7 +280,8 @@ final class CarPlayCoordinator: NSObject {
         heartRail.bounds = CGRect(x: 0, y: 0, width: railWidth, height: railHeight)
         heartRail.center = CGPoint(x: bandLeft + bandWidth / 2, y: (railTop + railBottom) / 2)
         heartRail.transform = .identity
-        heartRail.isHidden = !displayedVideo || (rotation != 0 && rotation != .pi)
+        railAllowed = (rotation == 0 || rotation == .pi)
+        syncHeartRailVisibility()
 
         // 和左上返回键对称：叉号放在 CarPlay 圆角界面之外的右侧留白，右 16、上 10
         let side: CGFloat = 16
@@ -284,6 +289,35 @@ final class CarPlayCoordinator: NSObject {
         closeButton.frame = CGRect(x: bounds.maxX - inset.right - side - 38,
                                    y: inset.top + top,
                                    width: 38, height: 38)
+    }
+
+    /// 没真实心率、还没出画面、或不在横向留白里时，整颗胶囊收起，不显示空壳。
+    private func syncHeartRailVisibility(animated: Bool = false) {
+        let visible = active && displayedVideo && railAllowed && HeartRateCenter.shared.current() != nil
+        if visible {
+            heartRail.isHidden = false
+            if animated {
+                heartRail.alpha = 0
+                UIView.animate(withDuration: 0.22, delay: 0,
+                               options: [.allowUserInteraction, .beginFromCurrentState]) {
+                    self.heartRail.alpha = 1
+                }
+            } else {
+                heartRail.alpha = 1
+            }
+        } else {
+            if animated && !heartRail.isHidden {
+                UIView.animate(withDuration: 0.18, delay: 0,
+                               options: [.allowUserInteraction, .beginFromCurrentState]) {
+                    self.heartRail.alpha = 0
+                } completion: { _ in
+                    self.heartRail.isHidden = true
+                }
+            } else {
+                heartRail.isHidden = true
+                heartRail.alpha = 1
+            }
+        }
     }
 
     // MARK: - 状态回传
