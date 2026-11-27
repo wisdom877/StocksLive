@@ -115,14 +115,14 @@ final class CarPlayCoordinator: NSObject {
             flip = (body["flip"] as? Int ?? (body["flip"] as? Bool == true ? 1 : 0)) != 0
             relayout()
         case "chrome":
-            // 网页把左上角返回键换成叉之后，由网页接管关闭；原生右上角的叉收起。
-            let showClose = (body["close"] as? Int ?? 1) != 0
-            closeButton.isHidden = !showClose || !displayedVideo || covered
+            // 待机页左上角已经有返回/关闭键，原生右上角那颗叉永远不再出现，避免两颗叉重复，
+            // 也避免打开设置、重排、出画面时它被任何一条路径重新显示出来。
+            closeButton.isHidden = true
         case "overlay":
             // 网页要压一层整屏设置：先把原生视频层与心率栏收走，关掉设置再放回来。
             covered = (body["covered"] as? Int ?? 0) != 0
             stage.isHidden = covered || !displayedVideo
-            closeButton.isHidden = covered || !displayedVideo
+            closeButton.isHidden = true
             syncHeartRailVisibility(animated: covered)
             relayout()
         default:
@@ -250,7 +250,7 @@ final class CarPlayCoordinator: NSObject {
                 if !self.displayedVideo {
                     self.displayedVideo = true
                     self.stage.isHidden = self.covered
-                    self.closeButton.isHidden = self.covered
+                    self.closeButton.isHidden = true
                     self.heartRail.refresh()
                     self.relayout()
                     self.push(state: "video", message: "CarPlay 画面已就绪")
@@ -371,6 +371,8 @@ final class CarPlayCoordinator: NSObject {
         closeButton.frame = CGRect(x: bounds.maxX - inset.right - side - 38,
                                    y: inset.top + top,
                                    width: 38, height: 38)
+        // 重排是最容易被漏掉的一条路径：这里再钉死一次，原生叉不会因设置开关/旋转而复活。
+        closeButton.isHidden = true
     }
 
     /// 没真实心率、还没出画面、或不在横向留白里时，整颗胶囊收起，不显示空壳。
