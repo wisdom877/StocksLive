@@ -149,6 +149,7 @@ final class BleHeart: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         if bpm == lastBpm && now.timeIntervalSince(lastPushAt) < 1.0 { return }
         lastBpm = bpm
         lastPushAt = now
+        HeartRateCenter.shared.ingest(bpm, at: now)
         let ms = Int(now.timeIntervalSince1970 * 1000)
         push("window.sbHrSample && window.sbHrSample(\(bpm), \(ms));")
     }

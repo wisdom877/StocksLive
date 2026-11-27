@@ -122,6 +122,7 @@ final class HealthBridge: NSObject {
             guard let self = self, let list = samples as? [HKQuantitySample], !list.isEmpty else { return }
             for s in list {
                 let bpm = s.quantity.doubleValue(for: unit)
+                HeartRateCenter.shared.ingest(Int(bpm.rounded()), at: s.endDate)
                 let ms = Int(s.endDate.timeIntervalSince1970 * 1000)
                 self.push("window.sbHrSample && window.sbHrSample(\(String(format: "%.0f", bpm)), \(ms));")
             }

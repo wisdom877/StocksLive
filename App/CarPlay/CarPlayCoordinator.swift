@@ -33,6 +33,7 @@ final class CarPlayCoordinator: NSObject {
     private let receiver = CarPlayReceiver()
     private let probe = SameDeviceProbe()
     private let stage = CarPlayStageView()
+    private let heartRail = HeartRateRailView()
     private let ssidReader = WiFiSSIDReader()
     private let closeButton = UIButton(type: .system)
     private var active = false
@@ -41,6 +42,7 @@ final class CarPlayCoordinator: NSObject {
     private var flip = false
     private var orientationObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
+    private var heartObserver: NSObjectProtocol?
     private var lastSSID: String?
     var onIdleAudio: (() -> Void)?
 
@@ -56,11 +58,14 @@ final class CarPlayCoordinator: NSObject {
             object: nil, queue: .main) { [weak self] _ in self?.relayout() }
         backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification,
             object: nil, queue: .main) { [weak self] _ in self?.stop(reason: "已进入后台，CarPlay 已停止") }
+        heartObserver = NotificationCenter.default.addObserver(forName: HeartRateCenter.didUpdate,
+            object: nil, queue: .main) { [weak self] _ in self?.heartRail.refresh() }
     }
 
     deinit {
         if let orientationObserver { NotificationCenter.default.removeObserver(orientationObserver) }
         if let backgroundObserver { NotificationCenter.default.removeObserver(backgroundObserver) }
+        if let heartObserver { NotificationCenter.default.removeObserver(heartObserver) }
         probe.stop(); receiver.stop()
     }
 
@@ -148,8 +153,10 @@ final class CarPlayCoordinator: NSObject {
         displayedVideo = false
         stage.surface.reset()
         stage.isHidden = true
+        heartRail.isHidden = true
         closeButton.isHidden = true
         host.view.addSubview(stage)
+        host.view.addSubview(heartRail)
         host.view.addSubview(closeButton)
         relayout()
         push(state: "starting", message: "正在创建本机配件端点…")
@@ -170,6 +177,8 @@ final class CarPlayCoordinator: NSObject {
                     self.displayedVideo = true
                     self.stage.isHidden = false
                     self.closeButton.isHidden = false
+                    self.heartRail.refresh()
+                    self.relayout()
                     self.push(state: "video", message: "CarPlay 画面已就绪")
                 }
             } catch {
@@ -205,6 +214,8 @@ final class CarPlayCoordinator: NSObject {
         receiver.stop()
         stage.surface.reset()
         stage.removeFromSuperview()
+        heartRail.isHidden = true
+        heartRail.removeFromSuperview()
         closeButton.removeFromSuperview()
         onIdleAudio?()
         push(state: state, message: reason ?? "CarPlay 已停止")
@@ -254,6 +265,19 @@ final class CarPlayCoordinator: NSObject {
         stage.transform = CGAffineTransform(rotationAngle: rotation)
 
         let inset = host.view.safeAreaInsets
+        // 右侧黑边：16:9 舞台之外的那一条。心率柱只占它，不压 CarPlay 画面。
+        let stageFrame = stage.frame
+        let bandLeft = stageFrame.maxX
+        let bandWidth = max(0, bounds.maxX - inset.right - bandLeft)
+        let railWidth = min(58, max(44, bandWidth - 20))
+        let railTop = inset.top + 58          // 给右上角关闭键留出安全距离
+        let railBottom = bounds.maxY - inset.bottom - 12
+        let railHeight = max(220, min(355, railBottom - railTop))
+        heartRail.bounds = CGRect(x: 0, y: 0, width: railWidth, height: railHeight)
+        heartRail.center = CGPoint(x: bandLeft + bandWidth / 2, y: (railTop + railBottom) / 2)
+        heartRail.transform = .identity
+        heartRail.isHidden = !displayedVideo || (rotation != 0 && rotation != .pi)
+
         // 和左上返回键对称：叉号放在 CarPlay 圆角界面之外的右侧留白，右 16、上 10
         let side: CGFloat = 16
         let top: CGFloat = 10
