@@ -1,3 +1,5 @@
+> 新版完整部署手册见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。本文是早期 Live Activity 构建笔记，部分路径/版本已过时。
+
 # StocksLive：纯 Swift 壳 + Live Activity（一条命令出未签名 ipa）
 
 和上一版 Capacitor 方案的区别：**没有 npm、没有 CocoaPods、没有 SPM 依赖**，两个 target、五个 Swift 文件，XcodeGen 生成工程，构建脚本直接吐 ipa。远程构建（GitHub Actions macOS）也能跑。

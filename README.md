@@ -6,6 +6,7 @@
 - Web 前端：FastAPI + 原生 JS（无构建步骤），入口 `web/app.py`。
 - CarPlay：私有 `CoreAccessories` 虚拟配件端点，走 iAP2 认证与 RTSP/H.264，画面由 `AVSampleBufferDisplayLayer` 显示。
 - CI：GitHub Actions 在每次 `main` 分支更新后自动构建**未签名 IPA**，产物在 Actions Artifact 中下载。
+- 当前构建号从 **1** 重新开始；完整上线步骤见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
 
 > 仓库是私有仓库：<https://github.com/wisdom877/StocksLive>。MFi 配件证书/私钥**不入库**，只通过 GitHub Actions Secrets 注入。
 
@@ -26,6 +27,10 @@
 ├── build-ipa.sh             # 本地/CI 一条命令产出未签名 IPA
 └── .github/workflows/       # GitHub Actions
 ```
+
+## 部署手册
+
+完整版：[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)，包含服务器 systemd/nginx/HTTPS、数据库备份、`deploy2.py`、GitHub Actions、签名和 CarPlay 排障。
 
 ## IPA 自动构建
 
