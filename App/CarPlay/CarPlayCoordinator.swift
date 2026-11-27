@@ -6,6 +6,13 @@ import WebKit
 
 final class CarPlayStageView: UIView {
     let surface = H264Surface()
+    /// 网页设置按钮所在的一小块区域不接收车机触控，让点击落到下面的 WKWebView。
+    var passthroughRect: CGRect = .null
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if passthroughRect.contains(point) { return nil }
+        return super.hitTest(point, with: event)
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -331,6 +338,8 @@ final class CarPlayCoordinator: NSObject {
         stage.bounds = CGRect(x: 0, y: 0, width: width, height: height)
         stage.center = CGPoint(x: bounds.midX, y: bounds.midY)
         stage.transform = CGAffineTransform(rotationAngle: rotation)
+        // 左上设置键 28×56，位置 16/56；多留一点手指容差，避免边缘点不中。
+        stage.passthroughRect = stage.convert(CGRect(x: 8, y: 46, width: 56, height: 84), from: host.view)
 
         let inset = host.view.safeAreaInsets
         // 心率卡贴屏幕最右侧悬浮，像左边按钮一样留出边距；整张卡只在 CarPlay 舞台之外的黑边里。
