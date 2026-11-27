@@ -2037,10 +2037,10 @@ input[type="date"],input[type="time"],input[type="datetime-local"]{width:100%;ma
 
 /* 定投行：压成一条轻量的计划说明，跟上面三枚仓位徽标分层 */
 
-/* ---------- 底部导航拖动滑块（京东式跟手高亮） ---------- */
-.tabbar{touch-action:none}
+/* ---------- 底部导航拖动滑块（Apple HIG：1:1 跟手 + 端点阻尼 + 弹性归位） ---------- */
+.tabbar{touch-action:none;-webkit-user-select:none;user-select:none}
 .tab-thumb{position:absolute;top:5px;bottom:5px;left:0;width:84px;border-radius:999px;
-  pointer-events:none;z-index:0;
+  pointer-events:none;z-index:0;transform-origin:center;
   background:linear-gradient(180deg,rgba(120,126,142,.16) 0%,rgba(120,126,142,.09) 100%),
     linear-gradient(150deg,rgba(255,255,255,.30) 0%,rgba(255,255,255,.06) 46%,rgba(255,255,255,.16) 100%);
   border:.5px solid rgba(255,255,255,.55);
@@ -2049,10 +2049,14 @@ input[type="date"],input[type="time"],input[type="datetime-local"]{width:100%;ma
   -webkit-backdrop-filter:blur(12px) saturate(1.9) brightness(1.12);
   backdrop-filter:blur(12px) saturate(1.9) brightness(1.12);
   will-change:left,width,transform}
-.tab-thumb.anim{transition:left .26s cubic-bezier(.22,.8,.28,1),width .26s cubic-bezier(.22,.8,.28,1),
-  transform .18s ease-out}
-.tab-thumb.lift{transform:scaleY(.9) scaleX(1.02);box-shadow:inset 0 1px 0 rgba(255,255,255,.98),
+/* Apple 的 ease-out：起步快、收尾稳，不做夸张回弹 */
+.tab-thumb.anim{transition:left .30s cubic-bezier(.32,.72,0,1),width .30s cubic-bezier(.32,.72,0,1),
+  transform .18s cubic-bezier(.32,.72,0,1)}
+.tab-thumb.lift{transform:translateY(-1px) scale(1.015);box-shadow:inset 0 1px 0 rgba(255,255,255,.98),
   inset 0 -1px 0 rgba(255,255,255,.18),0 8px 20px rgba(16,26,50,.16),0 0 0 .5px rgba(255,255,255,.45)}
+/* 拖动时手指直接操控玻璃块，不跟页面滚动抢手势 */
+.tabbar.dragging .tab-thumb{cursor:grabbing}
+@media (prefers-reduced-motion: reduce){.tab-thumb.anim{transition-duration:.01ms}}
 /* 单个按钮不再自己画选中底色，选中只由滑块表达 */
 .tabbar button{position:relative;z-index:1;background:none!important}
 .tabbar button.on,.tabbar button:active{background:none!important;box-shadow:none!important}

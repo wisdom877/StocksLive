@@ -580,7 +580,12 @@ function activateView(v) {
   $$(".view").forEach((el) => el.classList.add("hidden"));
   const vv = $("#view-" + v);
   if (vv) vv.classList.remove("hidden");
-  $$(".tabbar button").forEach((b) => b.classList.toggle("on", b.dataset.view === v));
+  $$(".tabbar button").forEach((b) => {
+    const on = b.dataset.view === v;
+    b.classList.toggle("on", on);
+    if (on) b.setAttribute("aria-current", "page");
+    else b.removeAttribute("aria-current");
+  });
   if (typeof updateTabThumb === "function") updateTabThumb(true);
   // 顶栏中间那根长条：工作页和行情页都显示（行情页第一行在 117pt 以下，静止时不压字，
   // 滚动时玻璃自带 blur，透出来的是虚化层，不会糊成一片可读的字）
@@ -745,7 +750,11 @@ async function refreshPane(scope) {
   } catch (e) { toast(`刷新失败：${e.message}`); }
 }
 
-/* ---------- 底部导航：按住可以横向拖动，高亮块跟着手指走（参考京东 tabbar） ---------- */
+/* ---------- 底部导航：按 Apple HIG 做成直接操控 ----------
+   1. 按下不打乱布局，拖动时滑块 1:1 跟手，不做夸张拉伸；
+   2. 到两端有轻微阻尼，松手用 Apple 风格的 ease-out 弹簧归位；
+   3. 跨过页签中心时给一次轻触反馈，快速甩动按速度投影到目标；
+   4. 点按仍然只触发一次，拖动结束不会再补一次 click。 */
 let _tabSuppressClick = false;
 function initTabDrag() {
   const nav = document.querySelector(".tabbar");
@@ -754,82 +763,143 @@ function initTabDrag() {
   thumb.className = "tab-thumb";
   nav.appendChild(thumb);
   const btns = () => [...nav.querySelectorAll("button")];
-  let drag = null, moved = false;
+  const reduceMotion = () =>
+    !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  let drag = null, moved = false, tickIdx = -1;
 
-  const relOf = (el) => {
-    const nr = nav.getBoundingClientRect(), r = el.getBoundingClientRect();
-    return { l: r.left - nr.left, w: r.width };
-  };
+  function measure() {
+    const nr = nav.getBoundingClientRect();
+    const list = btns();
+    const rects = list.map((b) => {
+      const r = b.getBoundingClientRect();
+      return { l: r.left - nr.left, w: r.width, c: r.left - nr.left + r.width / 2 };
+    });
+    return { nr, list, rects };
+  }
   function activeIdx() {
     const i = btns().findIndex((b) => b.classList.contains("on"));
     return i < 0 ? 0 : i;
   }
-  function nearestIdx(x) {
-    const nr = nav.getBoundingClientRect();
+  function nearestIdx(x, m) {
     let best = 0, dist = Infinity;
-    btns().forEach((b, i) => {
-      const r = b.getBoundingClientRect();
-      const d = Math.abs((r.left + r.width / 2 - nr.left) - (x - nr.left));
+    m.rects.forEach((r, i) => {
+      const d = Math.abs(r.c - x);
       if (d < dist) { dist = d; best = i; }
     });
     return best;
   }
+  function setThumb(left, animate) {
+    thumb.classList.toggle("anim", !!animate && !reduceMotion());
+    thumb.style.left = `${left}px`;
+  }
+  function tick() {
+    try { if (navigator.vibrate) navigator.vibrate(6); } catch (e) { /* 静默 */ }
+  }
   window.updateTabThumb = function (animate) {
-    const list = btns();
-    const b = list[activeIdx()];
-    if (!b) return;
-    const { l, w } = relOf(b);
-    thumb.classList.toggle("anim", !!animate);
-    thumb.style.width = `${w}px`;
-    thumb.style.left = `${l}px`;
+    const m = measure();
+    const i = activeIdx();
+    const r = m.rects[i];
+    if (!r) return;
+    thumb.style.width = `${r.w}px`;
+    setThumb(r.l, animate);
+    tickIdx = i;
+    btns().forEach((b, j) => b.classList.toggle("near", j === i));
   };
   const lift = (on) => thumb.classList.toggle("lift", on);
 
   nav.addEventListener("pointerdown", (e) => {
     if (e.button !== undefined && e.button !== 0) return;
-    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, w0: parseFloat(thumb.style.width) || 84 };
+    const m = measure();
+    const idx = nearestIdx(e.clientX - m.nr.left, m);
+    const r = m.rects[idx];
+    if (!r) return;
+    thumb.style.width = `${r.w}px`;
+    setThumb(r.l, false);                 // 按下即对齐到最近页签，不做迟滞
+    drag = {
+      id: e.pointerId, sx: e.clientX, sy: e.clientY,
+      grab: e.clientX - m.nr.left - r.c, m, w: r.w, idx,
+      vx: 0, lastX: e.clientX, lastT: performance.now(), cx: r.c,
+    };
     moved = false;
-    nav.classList.add("dragging");
-    const b = btns()[nearestIdx(e.clientX)];
-    if (b) { const { l, w } = relOf(b); thumb.classList.remove("anim"); thumb.style.width = `${w}px`; thumb.style.left = `${l}px`; }
+    tickIdx = idx;
+    btns().forEach((b, i) => b.classList.toggle("near", i === idx));
     try { nav.setPointerCapture(e.pointerId); } catch (err) {}
+    nav.classList.add("dragging");
   });
+
   nav.addEventListener("pointermove", (e) => {
     if (!drag || e.pointerId !== drag.id) return;
-    if (!moved && (Math.abs(e.clientX - drag.x) > 4 || Math.abs(e.clientY - drag.y) > 4)) moved = true;
-    if (!moved) return;
-    const nr = nav.getBoundingClientRect();
-    // 液体感：跟着手指走，走得越远拉得越长（最多 44px），松手弹回
-    const stretch = Math.min(58, Math.abs(e.clientX - drag.x) * 0.62);
-    const w = drag.w0 + stretch;
-    let left = e.clientX - nr.left - w / 2;
-    left = Math.max(0, Math.min(nr.width - w - 2, left));
-    thumb.style.width = `${w}px`;
-    thumb.style.left = `${left}px`;
-    lift(true);
-    const idx = nearestIdx(e.clientX);
-    btns().forEach((b, i) => b.classList.toggle("near", i === idx));
+    if (!moved) {
+      const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+      if (Math.hypot(dx, dy) < 6) return;
+      moved = true;
+      lift(true);
+      thumb.classList.remove("anim");
+    }
+    const m = drag.m;
+    const now = performance.now();
+    const dt = Math.max(1, now - drag.lastT);
+    const inst = (e.clientX - drag.lastX) / dt;
+    drag.vx = drag.vx * 0.72 + inst * 0.28;
+    drag.lastX = e.clientX;
+    drag.lastT = now;
+
+    // 端点阻尼：越界只给一点回弹余量，手感接近 UIScrollView 的 rubber band
+    let cx = e.clientX - m.nr.left - drag.grab;
+    const min = m.rects[0].c, max = m.rects[m.rects.length - 1].c;
+    if (cx < min) cx = min - Math.min(8, (min - cx) * 0.38);
+    else if (cx > max) cx = max + Math.min(8, (cx - max) * 0.38);
+    drag.cx = cx;
+    const left = Math.max(0, Math.min(m.nr.width - drag.w, cx - drag.w / 2));
+    setThumb(left, false);
+
+    const idx = nearestIdx(cx, m);
+    if (idx !== drag.idx) {
+      drag.idx = idx;
+      btns().forEach((b, i) => b.classList.toggle("near", i === idx));
+      tick();                              // 每跨一格一次 6ms 轻反馈
+    }
   });
-  function finish(e) {
+
+  function end(e, allowSelect) {
     if (!drag || e.pointerId !== drag.id) return;
-    const wasMoved = moved, idx = nearestIdx(e.clientX);
-    drag = null; moved = false;
+    const wasMoved = moved, m = drag.m;
+    const before = activeIdx();
+    let idx = drag.idx;
+    if (wasMoved && allowSelect) {
+      // 快速甩动时按速度往前投影 120ms；慢拖则落在最近的中心
+      const projected = drag.cx + drag.vx * 120;
+      idx = nearestIdx(projected, m);
+    }
+    drag = null;
+    moved = false;
     nav.classList.remove("dragging");
     lift(false);
     btns().forEach((b) => b.classList.remove("near"));
-    if (wasMoved) {
+    thumb.style.width = `${m.rects[idx].w}px`;
+    setThumb(m.rects[idx].l, true);
+
+    if (!wasMoved && allowSelect) {
+      // 点按：不依赖浏览器补发 click（setPointerCapture 后 click 可能落到 nav 上），
+      // 直接按松手位置派一次，再拦掉系统补发的那次，保证一次点按只切一次。
+      _tabSuppressClick = true;
+      setTimeout(() => { _tabSuppressClick = false; }, 400);
+      const b = m.list[idx];
+      if (b) b.click();
+      setTimeout(() => window.updateTabThumb(true), 60);
+    } else if (wasMoved && allowSelect && idx !== before) {
       // 指头抬起落到哪一格就切哪一格；这次不要再多派发一次 click
       _tabSuppressClick = true;
       setTimeout(() => { _tabSuppressClick = false; }, 400);
-      const b = btns()[idx];
+      const b = m.list[idx];
       if (b) b.click();
-      setTimeout(() => window.updateTabThumb(true), 40);
+      setTimeout(() => window.updateTabThumb(true), 60);
     } else {
       window.updateTabThumb(true);
     }
   }
-  nav.addEventListener("pointerup", finish);
-  nav.addEventListener("pointercancel", finish);
+  nav.addEventListener("pointerup", (e) => end(e, true));
+  nav.addEventListener("pointercancel", (e) => end(e, false));
   nav.addEventListener("click", (e) => {
     // 只拦手指抬起后系统补发的那次 click（detail>=1）；我们主动派的 click 是 detail 0，要放行
     if (_tabSuppressClick && e.detail !== 0) { e.stopPropagation(); e.preventDefault(); }
