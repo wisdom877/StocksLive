@@ -4,6 +4,27 @@
 var SB_MID_HOLD = 1200;
 var sbMidHeld = false;
 
+/* 长按进入待机的手感：越接近闭合，脉冲越密、越重；闭合那一下单独来一记重击。
+   iPhone 壳里走 wkHaptic（UIImpactFeedbackGenerator），没有桥接的浏览器不硬震。 */
+var SB_MID_HAPTIC = [
+  { p: 0.16, style: "light",  i: 0.26 },
+  { p: 0.38, style: "light",  i: 0.44 },
+  { p: 0.58, style: "medium", i: 0.62 },
+  { p: 0.75, style: "medium", i: 0.80 },
+  { p: 0.88, style: "heavy",  i: 0.92 },
+  { p: 0.96, style: "heavy",  i: 1.00 },
+  { p: 1.00, style: "final",  i: 1.00 }
+];
+function sbHoldHaptic(style, intensity) {
+  if (typeof window.wkHaptic === "function") {
+    try { return window.wkHaptic(style, intensity); } catch (e) {}
+  }
+  // 只有非壳环境才退回 navigator.vibrate；壳里的旧 polyfill 是整段强震，不能用来做渐强
+  if (!window.wkNativeCap && navigator.vibrate) {
+    try { navigator.vibrate(style === "final" ? 35 : 4 + Math.round(intensity * 9)); } catch (e) {}
+  }
+}
+
 (function sbHintOnLoad() {
   const add = () => {
     const mid = $("#top-mid");
@@ -27,10 +48,10 @@ var sbMidHeld = false;
 })();
 
 function sbBindMidHold(mid) {
-  let t0 = 0, raf = 0, pid = null, opened = false, finishTimer = 0;
+  let t0 = 0, raf = 0, pid = null, opened = false, finishTimer = 0, hapticAt = 0;
   const ring = () => $("#sb-mid-ring");
   const reset = () => {
-    t0 = 0; pid = null; opened = false;
+    t0 = 0; pid = null; opened = false; hapticAt = 0;
     if (finishTimer) clearTimeout(finishTimer);
     finishTimer = 0;
     if (raf) cancelAnimationFrame(raf);
@@ -38,10 +59,9 @@ function sbBindMidHold(mid) {
     const r = ring();
     if (r) { r.style.setProperty("--p", "0"); r.style.opacity = "0"; }
   };
-  const enter = (haptic) => {
+  const enter = () => {
     sbMidHeld = true;
     reset();
-    if (haptic) { try { navigator.vibrate && navigator.vibrate(28); } catch (e) {} }
     if (typeof sbAwakeSet === "function") sbAwakeSet(true);
     sbOpen();
   };
@@ -50,13 +70,17 @@ function sbBindMidHold(mid) {
     const p = Math.min(1, (performance.now() - t0) / SB_MID_HOLD);
     const r = ring();
     if (r) { r.style.opacity = "1"; r.style.setProperty("--p", p.toFixed(3)); }
+    while (hapticAt < SB_MID_HAPTIC.length && p >= SB_MID_HAPTIC[hapticAt].p) {
+      const h = SB_MID_HAPTIC[hapticAt++];
+      sbHoldHaptic(h.style, h.i);
+    }
     if (p >= 1) {
       opened = true;
       if (r) { r.style.opacity = "1"; r.style.setProperty("--p", "1"); }
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
       // 让环完整显示一拍再进待机，别一到 100% 就瞬间消失
-      finishTimer = setTimeout(() => { if (opened) enter(true); }, 180);
+      finishTimer = setTimeout(() => { if (opened) enter(); }, 180);
       return;
     }
     raf = requestAnimationFrame(step);
@@ -67,6 +91,7 @@ function sbBindMidHold(mid) {
     e.preventDefault();
     sbMidHeld = false;
     opened = false;
+    hapticAt = 0;
     pid = id;
     if (typeof id === "number") { try { mid.setPointerCapture(id); } catch (err) {} }
     const r = ring();

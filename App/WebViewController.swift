@@ -37,7 +37,18 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     (function () {
       if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.dndLive) return;
       // 告诉网页这一版壳支持哪些能力，网页据此决定怎么响应铃，老壳自动降级
-      window.wkNativeCap = { ring: 1, vibe: 1 };
+      window.wkNativeCap = { ring: 1, vibe: 1, haptic: 1 };
+      // 长按进度的分级触感：style = light / medium / heavy / final，intensity = 0...1
+      window.wkHaptic = function (style, intensity) {
+        try {
+          window.webkit.messageHandlers.wkNative.postMessage({
+            cmd: "haptic",
+            style: String(style || ""),
+            intensity: Number(intensity) || 0
+          });
+          return true;
+        } catch (e) { return false; }
+      };
       window.Capacitor = window.Capacitor || {};
       window.Capacitor.Plugins = window.Capacitor.Plugins || {};
       if (!navigator.vibrate) {
@@ -402,6 +413,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         case "vibe":
             if (dict["stop"] as? Bool) == true { return }
             vibrate()
+        case "haptic":
+            let style = (dict["style"] as? String) ?? ""
+            let intensity = (dict["intensity"] as? NSNumber)?.doubleValue ?? 0
+            playHaptic(style: style, intensity: intensity)
         case "tone":
             playTone(loop: (dict["loop"] as? Bool) ?? false)
         case "ring":
@@ -658,6 +673,28 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         let s = AVAudioSession.sharedInstance()
         try s.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
         try s.setActive(true)
+    }
+
+    /// 长按进度的分级触感。final 在重击之后再叠一记系统长震，作为「闭合」的落点。
+    private func playHaptic(style rawStyle: String, intensity rawIntensity: Double) {
+        let name = rawStyle.lowercased()
+        let style: UIImpactFeedbackGenerator.FeedbackStyle
+        switch name {
+        case "light": style = .light
+        case "heavy", "final": style = .heavy
+        case "soft": style = .soft
+        case "rigid": style = .rigid
+        default: style = .medium
+        }
+        let intensity = CGFloat(min(1, max(0, rawIntensity)))
+        let gen = UIImpactFeedbackGenerator(style: style)
+        gen.prepare()
+        gen.impactOccurred(intensity: intensity)
+        if name == "final" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+            }
+        }
     }
 
     /// 弹消息的震动：先给一记明确的触感，再叠系统长震，比只调其中一个更容易被感知
