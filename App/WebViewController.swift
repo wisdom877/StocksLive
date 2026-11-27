@@ -159,6 +159,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     @objc private func onActive() {
+        sendForeground()
         guard errorBox != nil else { return }
         autoRetry = 0
         triedFallback = false
@@ -780,7 +781,12 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
     @objc private func enterForeground() {
         syncStandbyPlayer()
+        sendForeground()      // 网页可能被系统冻住，主动叫醒它撤掉待机品牌卡
         reportNativeState()   // 回到前台把权限 / 已排条数刷新给页面
+    }
+
+    private func sendForeground() {
+        webView?.evaluateJavaScript("window.sbForeground && window.sbForeground();", completionHandler: nil)
     }
 
     /// 后台时播一条静音循环（audio 后台模式）→ 锁屏时页面定时器还在跑，到点能自己响铃+震动
