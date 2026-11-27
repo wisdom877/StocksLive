@@ -269,18 +269,22 @@ final class CarPlayCoordinator: NSObject {
         stage.transform = CGAffineTransform(rotationAngle: rotation)
 
         let inset = host.view.safeAreaInsets
-        // 右侧黑边：16:9 舞台之外的那一条。心率柱只占它，不压 CarPlay 画面。
+        // 心率卡贴屏幕最右侧悬浮，像左边按钮一样留出边距；整张卡只在 CarPlay 舞台之外的黑边里。
         let stageFrame = stage.frame
-        let bandLeft = stageFrame.maxX
-        let bandWidth = max(0, bounds.maxX - inset.right - bandLeft)
-        let railWidth = min(58, max(44, bandWidth - 20))
+        let safeRight = bounds.maxX - inset.right
+        let bandWidth = max(0, safeRight - stageFrame.maxX)
+        let railWidth = min(112, max(76, bandWidth - 16))
         let railTop = inset.top + 58          // 给右上角关闭键留出安全距离
         let railBottom = bounds.maxY - inset.bottom - 12
-        let railHeight = max(220, min(355, railBottom - railTop))
+        let railHeight = min(228, max(180, railBottom - railTop))
+        let railRight = safeRight - 14
+        let railCenterX = railRight - railWidth / 2
         heartRail.bounds = CGRect(x: 0, y: 0, width: railWidth, height: railHeight)
-        heartRail.center = CGPoint(x: bandLeft + bandWidth / 2, y: (railTop + railBottom) / 2)
+        heartRail.center = CGPoint(x: railCenterX, y: railTop + railHeight / 2)
         heartRail.transform = .identity
+        // 右边黑边不够宽时整张卡收起，宁可没有也不压 CarPlay 画面。
         railAllowed = (rotation == 0 || rotation == .pi)
+            && (railCenterX - railWidth / 2) >= stageFrame.maxX + 8
         syncHeartRailVisibility()
 
         // 和左上返回键对称：叉号放在 CarPlay 圆角界面之外的右侧留白，右 16、上 10
