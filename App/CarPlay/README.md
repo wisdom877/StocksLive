@@ -60,6 +60,10 @@ App/CarPlay/
 5. 新增 `CarPlayCoordinator` / `CarPlayStageView`：桥、几何、进出、状态回传。
 6. `CarPlayInfo`：能力声明原样保留，只改显示名/型号字符串。
 
+## Wi-Fi
+
+首次启动会先尝试读系统当前 Wi-Fi：`Access WiFi Information` 能力 + 「使用期间」定位授权都在时，只弹密码框；缺任一项就退回手填 SSID/密码。密码存钥匙串，SSID 存 UserDefaults。
+
 ## Identity（重要）
 
 `Identity/` 里是 Apple 签发的 MFi 配件证书与私钥，**不属于开源许可**：

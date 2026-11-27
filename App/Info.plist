@@ -44,6 +44,8 @@
 	<string>本应用不写入健康数据，仅在你授权后读取。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>通过同一 Wi-Fi 连接本机 CarPlay 会话，并发布发现服务</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>读取当前 Wi-Fi 名称，用于连接本机 CarPlay；不采集、不上传位置</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>CarPlay 的通话与 Siri 使用麦克风；可以在 CarPlay 里不启用语音功能</string>
 	<key>NSSupportsLiveActivities</key>

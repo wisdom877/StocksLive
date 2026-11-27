@@ -33,8 +33,10 @@ final class CarPlayCoordinator: NSObject {
     private let receiver = CarPlayReceiver()
     private let probe = SameDeviceProbe()
     private let stage = CarPlayStageView()
+    private let ssidReader = WiFiSSIDReader()
     private let closeButton = UIButton(type: .system)
     private var active = false
+    private var resolvingSSID = false
     private var displayedVideo = false
     private var flip = false
     private var orientationObserver: NSObjectProtocol?
@@ -88,7 +90,7 @@ final class CarPlayCoordinator: NSObject {
     // MARK: - 启动 / 停止
 
     private func start(ssid: String?, password: String?) {
-        guard !active else { return }
+        guard !active, !resolvingSSID else { return }
         if let ssid, !ssid.isEmpty {
             begin(ssid: ssid, password: password ?? "")
             return
@@ -98,15 +100,54 @@ final class CarPlayCoordinator: NSObject {
             begin(ssid: saved, password: stored ?? "")
             return
         }
-        promptCredentials()
+        resolvingSSID = true
+        push(state: "starting", message: "正在读取当前 Wi-Fi…")
+        ssidReader.currentSSID { [weak self] name in
+            guard let self, self.resolvingSSID else { return }
+            self.resolvingSSID = false
+            guard !self.active else { return }
+            if let name, !name.isEmpty {
+                self.promptPassword(ssid: name)
+            } else {
+                self.promptCredentials(prefill: self.lastSSID)
+            }
+        }
     }
 
-    private func promptCredentials() {
-        guard let host, host.presentedViewController == nil else { return }
-        let alert = UIAlertController(title: "连接 CarPlay", message: "填写 iPhone 当前所连 Wi-Fi 的名称和密码。密码只保存在本机钥匙串。", preferredStyle: .alert)
+    private func promptPassword(ssid: String) {
+        guard let host, host.presentedViewController == nil else {
+            push(state: "failed", message: "请先关闭其它弹窗，再启动 CarPlay")
+            return
+        }
+        let alert = UIAlertController(title: "连接 CarPlay",
+                                      message: "已识别当前 Wi-Fi：\(ssid)。输入密码后开始；开放网络留空。",
+                                      preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "Wi-Fi 密码（开放网络留空）"
+            field.isSecureTextEntry = true
+            field.autocorrectionType = .no
+            field.autocapitalizationType = .none
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
+            self?.push(state: "idle", message: "未启动")
+        })
+        alert.addAction(UIAlertAction(title: "开始", style: .default) { [weak self, weak alert] _ in
+            guard let self else { return }
+            let password = alert?.textFields?.first?.text ?? ""
+            self.begin(ssid: ssid, password: password)
+        })
+        host.present(alert, animated: true)
+    }
+
+    private func promptCredentials(prefill: String?) {
+        guard let host, host.presentedViewController == nil else {
+            push(state: "failed", message: "请先关闭其它弹窗，再启动 CarPlay")
+            return
+        }
+        let alert = UIAlertController(title: "连接 CarPlay", message: "未读到当前 Wi-Fi（可能未授权定位）。填写 iPhone 所连 Wi-Fi 的名称和密码。密码只保存在本机钥匙串。", preferredStyle: .alert)
         alert.addTextField { field in
             field.placeholder = "Wi-Fi 名称"
-            field.text = self.lastSSID
+            field.text = prefill
             field.autocorrectionType = .no
             field.autocapitalizationType = .none
         }
@@ -209,7 +250,8 @@ final class CarPlayCoordinator: NSObject {
     }
 
     private func stop(reason: String?, state: String = "idle") {
-        guard active || !stage.isHidden else { return }
+        guard active || !stage.isHidden || resolvingSSID else { return }
+        resolvingSSID = false
         active = false
         displayedVideo = false
         probe.stop()
