@@ -141,7 +141,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             NotificationCenter.default.addObserver(self, selector: #selector(pushBattery),
                                                    name: name, object: nil)
         }
-        addLoading()
+        addBoot()
         NotificationCenter.default.addObserver(self, selector: #selector(onActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
         load()
@@ -164,7 +164,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         triedFallback = false
         errorBox?.removeFromSuperview()
         errorBox = nil
-        addLoading()
+        addBoot()
         load()
     }
 
@@ -175,24 +175,27 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     // MARK: - 载入状态（黑屏时能看见原因，不用连 Xcode）
 
-    private var loading: UIActivityIndicatorView?
+    private var boot: BootSplashView?
     private var errorBox: UIView?
 
-    private func addLoading() {
-        let a = UIActivityIndicatorView(style: .medium)
-        a.color = .label
-        a.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(a)
+    private func addBoot() {
+        boot?.removeFromSuperview()
+        let b = BootSplashView(frame: view.bounds)
+        b.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(b)
         NSLayoutConstraint.activate([
-            a.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            a.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+            b.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            b.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            b.topAnchor.constraint(equalTo: view.topAnchor),
+            b.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
-        a.startAnimating()
-        loading = a
+        b.start()
+        boot = b
     }
 
     private func showError(_ text: String) {
-        loading?.stopAnimating()
+        boot?.finish()
+        boot = nil
         errorBox?.removeFromSuperview()
 
         let box = UIView()
@@ -232,7 +235,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         errorBox?.removeFromSuperview()
         errorBox = nil
         autoRetry = 0
-        addLoading()
+        addBoot()
         load()
     }
 
@@ -262,7 +265,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         pushSafeArea()
         pushPendingAlarm()
         autoRetry = 0
-        loading?.stopAnimating()
+        boot?.finish()
+        boot = nil
         // 健康权限不在启动时问：没带 HealthKit 能力的签名会让 requestAuthorization 直接失败，
         // 放在用户主动点「开启健康数据」时再试，启动永远不受影响。
     }
