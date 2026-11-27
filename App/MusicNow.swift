@@ -180,14 +180,32 @@ final class MusicNow: NSObject {
         }
     }
 
+    /// 本机就是 CarPlay 接收端时，系统「音乐」的默认输出会被吸到虚拟 carAudio 路由，
+    /// 结果就是界面在播、车里/手机上都没声。这里和接收端一样把输出拉回物理扬声器。
+    private func activatePlaybackSession() {
+        let s = AVAudioSession.sharedInstance()
+        let onCarAudio = s.currentRoute.outputs.contains { $0.portType == .carAudio }
+        guard onCarAudio else {
+            try? s.setCategory(.playback, mode: .default, options: [])
+            try? s.setActive(true)
+            return
+        }
+        do {
+            try s.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+            try s.setActive(true)
+            try s.overrideOutputAudioPort(.speaker)
+        } catch {
+            try? s.setCategory(.playback, mode: .default, options: [])
+            try? s.setActive(true)
+        }
+    }
+
     private func playItems(_ items: [MPMediaItem]) {
         guard !items.isEmpty else { return }
         system.pause()                       // 两条通道同时放会叠音
         // 壳平时把会话压成 ambient 且不激活（为了不压低别人的音乐）；
         // 我们自己要出声就得临时切到 playback 并激活，否则放出来是哑的。
-        let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playback, mode: .default, options: [])
-        try? s.setActive(true)
+        activatePlaybackSession()
         useQueue = true
         queue.setQueue(with: MPMediaItemCollection(items: items))
         queue.play()
@@ -239,9 +257,7 @@ final class MusicNow: NSObject {
         let items = pl.items
         guard let startItem = items.first(where: { $0.persistentID == tid }) ?? items.first else { return }
         system.pause()
-        let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playback, mode: .default, options: [])
-        try? s.setActive(true)
+        activatePlaybackSession()
         useQueue = true
         queue.setQueue(with: MPMediaItemCollection(items: items))
         queue.nowPlayingItem = startItem
