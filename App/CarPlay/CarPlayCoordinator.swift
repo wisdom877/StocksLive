@@ -93,6 +93,10 @@ final class CarPlayCoordinator: NSObject {
         case "geometry":
             flip = (body["flip"] as? Int ?? (body["flip"] as? Bool == true ? 1 : 0)) != 0
             relayout()
+        case "chrome":
+            // 网页把左上角返回键换成叉之后，由网页接管关闭；原生右上角的叉收起。
+            let showClose = (body["close"] as? Int ?? 1) != 0
+            closeButton.isHidden = !showClose || !displayedVideo
         default:
             break
         }
@@ -285,7 +289,8 @@ final class CarPlayCoordinator: NSObject {
         let railCenterX = railRight - railWidth / 2
         heartRail.bounds = CGRect(x: 0, y: 0, width: railWidth, height: railHeight)
         heartRail.center = CGPoint(x: railCenterX, y: railTop + railHeight / 2)
-        heartRail.transform = .identity
+        // 翻转时内容跟着转 180°，但始终留在物理右侧；左边是返回/固定/翻转三颗按钮。
+        heartRail.transform = CGAffineTransform(rotationAngle: flip ? .pi : 0)
         // 右侧带子真的太窄时才收起，避免压住 CarPlay 画面。
         railAllowed = (rotation == 0 || rotation == .pi)
             && (railCenterX - railWidth / 2) >= stageFrame.maxX + railGap - 1

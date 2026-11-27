@@ -8,11 +8,11 @@
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>黄杨工作台</title>
+<title>黄杨</title>
 <link rel="apple-touch-icon" sizes="180x180" href="static/icon-180.png">
 <link rel="icon" type="image/png" sizes="512x512" href="static/icon-512.png">
 <link rel="manifest" href="static/manifest.webmanifest">
-<meta name="application-name" content="黄杨工作台">
+<meta name="application-name" content="黄杨">
 <script>/* 主题先定：某些 WebView 不上报 prefers-color-scheme，页面自己把 html[data-theme] 摆好，
    后面的 CSS 只按这个属性取色，系统外观只在「跟随系统」时作为初值 */
 (function(){var m="auto";try{m=localStorage.getItem("appTheme")||"auto"}catch(e){}
@@ -39,17 +39,17 @@ window.__bootGuard = setTimeout(function () {
   }
 }, 10000);
 </script>
-<div id="splash"><div class="sp-mark"><svg viewBox="0 0 48 48" fill="none"><rect x="1.6" y="1.6" width="44.8" height="44.8" rx="12" stroke="currentColor" stroke-width="1.1" opacity=".22"/><path d="M10 33 18.6 23.2l5.8 5.6L38 13.6" stroke="#e5484d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M30.5 13.2h8v8" stroke="#e5484d" stroke-width="2.2" stroke-linecap="round"/></svg></div><div class="sp-name">黄杨工作台</div><div class="sp-tip">正在加载…</div></div>
+<div id="splash"><div class="sp-mark"><img src="static/icon-180.png" alt=""></div><div class="sp-name">黄杨</div><div class="sp-tip">正在加载…</div></div>
 
 <!-- 登录（APK 不会看到，?k= 自动登录） -->
-<section id="login" class="login hidden">
-  <div class="login-card">
-    <div class="login-mark"><svg viewBox="0 0 48 48" fill="none"><rect x="1.6" y="1.6" width="44.8" height="44.8" rx="12" stroke="currentColor" stroke-width="1.1" opacity=".22"/><path d="M10 33 18.6 23.2l5.8 5.6L38 13.6" stroke="#e5484d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M30.5 13.2h8v8" stroke="#e5484d" stroke-width="2.2" stroke-linecap="round"/></svg></div>
-    <h1>黄杨工作台</h1>
-    <p class="muted">报告 · 持仓 · 关注 · 想法</p>
-    <form id="login-form">
-      <input id="pw" type="password" placeholder="访问密码" autocomplete="current-password" required>
-      <button class="btn primary" type="submit">进入</button>
+<section id="login" class="login auth hidden">
+  <div class="auth-card">
+    <img class="auth-logo" src="static/icon-180.png" width="88" height="88" alt="黄杨">
+    <h1 class="auth-title">黄杨</h1>
+    <p class="auth-sub">报告 · 持仓 · 关注 · 想法</p>
+    <form id="login-form" class="auth-form">
+      <input id="pw" class="auth-input" type="password" placeholder="访问密码" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" required>
+      <button class="auth-btn" type="submit">进入</button>
       <p id="login-err" class="err"></p>
     </form>
     <div class="ver-tag" data-ver hidden></div>

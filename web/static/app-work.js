@@ -214,7 +214,7 @@ function wkNativeRetry(aid) {
   const tick = () => {
     if (!_wkNativeAid) return;
     if (wkNativeReady()) { const a = _wkNativeAid; _wkNativeAid = null; window.wkNativeAlarm(a); return; }
-    if (Date.now() - _wkNativeT0 > 30000) { _wkNativeAid = null; return; }
+    if (Date.now() - _wkNativeT0 > 120000) { _wkNativeAid = null; return; }
     setTimeout(tick, 400);
   };
   setTimeout(tick, 200);

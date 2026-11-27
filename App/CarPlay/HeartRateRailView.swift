@@ -211,8 +211,11 @@ final class HeartRateRailView: UIView {
         unitLabel.frame = CGRect(x: pad + 1, y: 67, width: w - pad * 2, height: 10)
 
         zoneDot.frame = CGRect(x: pad, y: 88, width: 6, height: 6)
+        let narrow = w < 108
+        zonePct.isHidden = narrow
         zonePct.frame = CGRect(x: w - pad - 28, y: 84, width: 28, height: 13)
-        zoneLabel.frame = CGRect(x: pad + 11, y: 83, width: max(20, w - pad * 2 - 39), height: 15)
+        zoneLabel.frame = CGRect(x: pad + 11, y: 83,
+                                 width: max(20, w - pad * 2 - (narrow ? 11 : 39)), height: 15)
 
         zoneTrack.frame = CGRect(x: pad, y: 105, width: w - pad * 2, height: 3)
         zoneScale.frame = zoneTrack.bounds

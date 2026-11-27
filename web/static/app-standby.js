@@ -149,7 +149,8 @@ function sbNow() {
 function sbState() {
   if (!state.sb) {
     state.sb = {
-      built: false, on: false, page: 0, flip: false, land: false, pinned: false, pinTimer: null, swipeTimer: null,
+      built: false, prefsLoaded: false, on: false, page: 0, flip: false, land: false,
+      pinned: false, pinAuto: false, pinTimer: null, swipeTimer: null, cpClosing: false,
       day: "", tickTimer: null, idleTimer: null, dimTimer: null, dimmed: false,
       wx: null, wxAt: 0, work: null, workAt: 0,
       awake: (function () { try { return localStorage.getItem("sbAwake") !== "0"; } catch (e) { return true; } })(),
@@ -221,14 +222,91 @@ function sbCarPlaySubmit() {
   sbCarPlaySet("starting", "");
 }
 
+function sbCpWant() {
+  try { return localStorage.getItem("sbCpWant") === "1"; } catch (e) { return false; }
+}
+function sbCpWantSet(on) {
+  try { localStorage.setItem("sbCpWant", on ? "1" : "0"); } catch (e) {}
+}
+
+/* CarPlay 里左上角就是右上角那颗叉：一次点按停止 CarPlay，不需要长按。 */
+function sbCarPlayClose() {
+  const s = sbState();
+  s.cpClosing = true;
+  sbCpWantSet(false);
+  try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
+  sbCarPlaySet("idle", "");
+  s.cpClosing = false;
+  sbPaintBackMode();
+}
+
+/* 左上位在 CarPlay 出画面时换成叉；其余时候仍是长按退出的返回箭头。 */
+function sbPaintBackMode() {
+  const page = document.querySelector('#sb .sb-p[data-p="6"]');
+  const video = !!page && page.dataset.cp === "video";
+  const b = $("#sb-back"), box = $("#sb");
+  if (box) box.classList.toggle("sb-cp-video", video);
+  if (b) {
+    b.classList.toggle("is-x", video);
+    b.setAttribute("aria-label", video ? "关闭 CarPlay" : "长按退出待机");
+  }
+}
+
+/* 切后台回来不再要求重新长按：只要这一轮 CarPlay 是用户开着的，就自动续上。 */
+var sbCpResumeAt = 0;
+function sbCpResume() {
+  const s = sbState();
+  if (!s.on || document.hidden || !sbCpWant() || s.page !== 6) return;
+  const page = document.querySelector('#sb .sb-p[data-p="6"]');
+  const st = (page && page.dataset.cp) || "idle";
+  if (st === "video" || st === "starting" || st === "auth" || st === "ready") return;
+  if (Date.now() - sbCpResumeAt < 2600) return;
+  sbCpResumeAt = Date.now();
+  sbCarPlayStart();
+}
+
 function sbCarPlaySet(state, message) {
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
   if (!page) return;
+  const s = sbState();
   const prev = page.dataset.cp;
   page.dataset.cp = state;
   page.classList.toggle("sb-cp-live", state === "video");
   const box = $("#sb");
   if (box) box.classList.toggle("sb-cp-video", state === "video");
+
+  // 原生右上角的叉 → 网页左上角的叉：网页接管后让壳把原生那颗收起来。
+  if (state === "video") sbCarPlayMsg({ cmd: "chrome", close: 0 });
+
+  if (state === "video") {
+    sbCpWantSet(true);
+    if (!s.pinned || !s.pinAuto) {
+      s.pinned = true;
+      s.pinAuto = true;
+      sbPinHold();
+      sbPinSave();
+      sbPaintPin();
+    }
+    if (s.on && s.page !== 6) { s.page = 6; sbGo(6, true); }
+  } else if (sbCpWant()) {
+    // 后台被系统掐断、回前台自动续连时，画面还没回来也要保持固定，别被轮播翻走。
+    if (!s.pinned || !s.pinAuto) {
+      s.pinned = true;
+      s.pinAuto = true;
+      sbPinHold();
+      sbPinSave();
+      sbPaintPin();
+    }
+  }
+
+  // 原生叉自己点掉时也会回 idle；靠文案区分“进后台被停”和“用户主动停止”。
+  if (state === "idle" && prev === "video" && !s.cpClosing && !document.hidden && !/后台/.test(message || "")) {
+    sbCpWantSet(false);
+    if (s.pinAuto) sbPinAuto(false);
+  } else if ((state === "idle" || state === "failed") && !sbCpWant() && s.pinAuto) {
+    sbPinAuto(false);
+  }
+
   const hint = $("#sb-cp-hint");
   if (hint) {
     let text = "长按 Hello 进入 CarPlay";
@@ -242,6 +320,8 @@ function sbCarPlaySet(state, message) {
   }
   if (state !== "credentials") sbCarPlaySheet(false);
   if (state === "failed" && prev !== "failed") sbCarPlayFailHaptic();
+  sbPaintBackMode();
+  sbCpHeartPaint();
 }
 
 /* 连接失败：三记短促重击，明显区别于成功时的那一下收尾 */
@@ -310,6 +390,8 @@ window.wkCarPlayState = function (payload) {
 };
 
 function sbCarPlayStart() {
+  const page = document.querySelector('#sb .sb-p[data-p="6"]');
+  if (page) sbCpWantSet(true);
   if (!sbCarPlayMsg({ cmd: "start" })) { sbCarPlaySet("failed", "当前壳版本不支持 CarPlay"); return; }
   sbCarPlaySet("starting", "");
 }
@@ -325,23 +407,38 @@ function sbCarPlayPage(idx) {
   if (idx === 6) {
     sbCarPlayMsg({ cmd: "geometry", flip: box && box.classList.contains("sb-flip") ? 1 : 0 });
     sbDimOff();
+    sbCpHeartPaint();
   } else if (SB_CP_LAST === 6) {
     sbCarPlayMsg({ cmd: "stop" });
     sbCarPlaySheet(false);
+    sbCpWantSet(false);
+    if (sbState().pinAuto) sbPinAuto(false);
     sbDimArm();
   }
+  sbPaintBackMode();
   SB_CP_LAST = idx;
 }
 
-/* ---------- 固定：锁当前页、禁翻页、禁退出；再点一下解锁 ---------- */
+/* ---------- 固定：锁当前页、禁翻页；CarPlay 连接后自动固定且不可点 ---------- */
+function sbPinSave() {
+  const s = sbState();
+  try {
+    localStorage.setItem("sbPin", (s.pinned || s.pinAuto) ? "1" : "0");
+    localStorage.setItem("sbPage", String(s.page));
+  } catch (e) {}
+}
+
 function sbPaintPin() {
   const s = sbState();
   const box = $("#sb"), b = $("#sb-pin");
   if (box) box.classList.toggle("sb-pinned", !!s.pinned);
   if (b) {
     b.classList.toggle("on", !!s.pinned);
+    b.classList.toggle("locked", !!s.pinAuto);
     b.textContent = s.pinned ? "已固定" : "固定";
+    b.disabled = !!s.pinAuto;
     b.setAttribute("aria-pressed", s.pinned ? "true" : "false");
+    b.setAttribute("aria-disabled", s.pinAuto ? "true" : "false");
   }
 }
 
@@ -354,8 +451,31 @@ function sbPinPing() {
   } catch (e) {}
 }
 
+function sbPinHold() {
+  const s = sbState();
+  clearInterval(s.pinTimer);
+  s.pinTimer = null;
+  if (s.pinned) { sbPinPing(); s.pinTimer = setInterval(sbPinPing, 3000); }
+}
+
+/* CarPlay 连通时由系统自动固定：按钮显示「已固定」，不可再点掉。 */
+function sbPinAuto(on) {
+  const s = sbState();
+  s.pinAuto = !!on;
+  if (on) {
+    s.pinned = true;
+    sbPinHold();
+  } else {
+    clearInterval(s.pinTimer); s.pinTimer = null;
+    s.pinned = false;
+  }
+  sbPinSave();
+  sbPaintPin();
+}
+
 function sbPin() {
   const s = sbState();
+  if (s.pinAuto) return;                 // CarPlay 自动固定期间不可修改
   s.pinned = !s.pinned;
   clearInterval(s.pinTimer);
   s.pinTimer = null;
@@ -366,6 +486,7 @@ function sbPin() {
       if (h) h.postMessage({ cmd: "awake", on: s.awake && s.on ? 1 : 0 });
     } catch (e) {}
   }
+  sbPinSave();
   sbPaintPin();
   sbIdleReset();
 }
@@ -379,11 +500,16 @@ function sbBuild() {
   box.className = "hidden";
   box.setAttribute("aria-hidden", "true");
   box.innerHTML = `
+  <div class="sb-boot" id="sb-boot" hidden aria-hidden="true">
+    <strong class="sb-boot-word">Wisdom</strong>
+    <em class="sb-boot-sub">黄杨科技</em>
+  </div>
   <div class="sb-stage">
     <i class="sb-safe" aria-hidden="true"></i>
     <div class="sb-top">
       <button type="button" class="sb-back" id="sb-back" aria-label="长按退出待机">
         <svg viewBox="0 0 24 24" class="sb-back-c" aria-hidden="true"><path d="M14.5 5.5L8 12l6.5 6.5"/></svg>
+        <svg viewBox="0 0 24 24" class="sb-back-x" aria-hidden="true"><path d="M7.2 7.2l9.6 9.6M16.8 7.2l-9.6 9.6"/></svg>
         <svg viewBox="0 0 40 40" class="sb-back-ring" aria-hidden="true">
           <circle class="sb-ring-bg" cx="20" cy="20" r="18.5"/>
           <circle class="sb-ring-fg" id="sb-ring-fg" cx="20" cy="20" r="18.5"/>
@@ -529,6 +655,35 @@ function sbBuild() {
         <div class="sb-hello" id="sb-cp-hello">
           <span class="sb-hello-t" data-text="Hello CarPlay!">Hello CarPlay!</span>
           <span class="sb-hello-hint" id="sb-cp-hint">长按 Hello 进入 CarPlay</span>
+        </div>
+        <!-- 旧壳没有原生心率卡时，网页在右侧黑边补两颗悬浮玻璃胶囊：
+             上面只放心率与竖向波形，下面轮播区间 / 本次 / 峰值 / 平均。 -->
+        <div class="sb-cp-hr" id="sb-cp-hr" hidden>
+          <div class="sb-cp-cap sb-cph">
+            <span class="sb-cph-word" aria-hidden="true">PULSE</span>
+            <i class="sb-cph-live" aria-hidden="true"></i>
+            <div class="sb-cph-wave">
+              <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                <defs><linearGradient id="sb-cph-grad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#ffb2a8"/><stop offset=".55" stop-color="#ff453a"/><stop offset="1" stop-color="#ff1d12"/>
+                </linearGradient></defs>
+                <path class="area" id="sb-cph-area" d=""></path>
+                <path class="line" id="sb-cph-path" d=""></path>
+                <circle class="dot" id="sb-cph-dot" cx="50" cy="96" r="1.7"></circle>
+              </svg>
+            </div>
+            <div class="sb-cph-read"><b id="sb-cph-bpm">—</b></div>
+          </div>
+
+          <div class="sb-cp-cap sb-cpl" id="sb-cp-live">
+            <div class="sb-cpl-track">
+              <div class="sb-cpl-page on" data-k="zone"><span class="sb-cpl-k">当前</span><b id="sb-cpl-v-zone">静息</b><span class="sb-cpl-u" id="sb-cpl-u-zone">Z1</span></div>
+              <div class="sb-cpl-page" data-k="range"><span class="sb-cpl-k">本次</span><b id="sb-cpl-v-range">—</b><span class="sb-cpl-u">BPM</span></div>
+              <div class="sb-cpl-page" data-k="peak"><span class="sb-cpl-k">峰值</span><b id="sb-cpl-v-peak">—</b><span class="sb-cpl-u">BPM</span></div>
+              <div class="sb-cpl-page" data-k="avg"><span class="sb-cpl-k">平均</span><b id="sb-cpl-v-avg">—</b><span class="sb-cpl-u">BPM</span></div>
+            </div>
+            <div class="sb-cpl-dots" id="sb-cpl-dots"><i class="on"></i><i></i><i></i><i></i></div>
+          </div>
         </div>
       </div>
     </div>
@@ -814,6 +969,166 @@ function sbOrient(on) {
   } catch (e) { /* 浏览器里没有壳，靠舞台自己 rotate */ }
 }
 
+/* 进入待机先盖一层极简启动页：等横屏转完、尺寸稳定后再揭开，避免转屏那几秒的错位 */
+var SB_BOOT_MIN = 1400, SB_BOOT_MAX = 3000, SB_BOOT_STABLE = 300;
+var sbBoot = { gen: 0, finished: true, minOk: false, minTimer: 0, maxTimer: 0, stableTimer: 0 };
+
+function sbBootDetach() {
+  window.removeEventListener("resize", sbBootNudge);
+  window.removeEventListener("orientationchange", sbBootNudge);
+}
+
+function sbBootNudge() {
+  if (sbBoot.finished) return;
+  clearTimeout(sbBoot.stableTimer);
+  sbBoot.stableTimer = setTimeout(sbBootMaybe, SB_BOOT_STABLE);
+}
+
+function sbBootMaybe() {
+  if (sbBoot.finished || !sbBoot.minOk || document.hidden) return;
+  if (window.innerWidth <= window.innerHeight + 1) return;   // 还竖着就继续等转屏
+  sbBootFinish();
+}
+
+function sbBootStart() {
+  const box = $("#sb"), el = $("#sb-boot");
+  sbBoot.gen++;
+  sbBoot.finished = false;
+  sbBoot.minOk = false;
+  clearTimeout(sbBoot.minTimer); clearTimeout(sbBoot.maxTimer); clearTimeout(sbBoot.stableTimer);
+  sbBootDetach();
+  if (!box || !el) { sbBoot.finished = true; return; }
+  box.classList.add("sb-booting");
+  el.hidden = false;
+  el.classList.remove("out");
+  window.addEventListener("resize", sbBootNudge, { passive: true });
+  window.addEventListener("orientationchange", sbBootNudge, { passive: true });
+  sbBoot.minTimer = setTimeout(() => { sbBoot.minOk = true; sbBootMaybe(); }, SB_BOOT_MIN);
+  sbBoot.maxTimer = setTimeout(sbBootFinish, SB_BOOT_MAX);
+}
+
+function sbBootFinish() {
+  if (sbBoot.finished) return;
+  sbBoot.finished = true;
+  const gen = sbBoot.gen;
+  clearTimeout(sbBoot.minTimer); clearTimeout(sbBoot.maxTimer); clearTimeout(sbBoot.stableTimer);
+  sbBootDetach();
+  const box = $("#sb"), el = $("#sb-boot");
+  if (box) { sbLayout(); sbGo(sbState().page, true); }
+  if (el) {
+    el.classList.add("out");
+    setTimeout(() => {
+      if (gen !== sbBoot.gen) return;
+      el.hidden = true;
+      if (box) box.classList.remove("sb-booting");
+    }, 380);
+  } else if (box) box.classList.remove("sb-booting");
+}
+
+function sbBootAbort() {
+  sbBoot.gen++;
+  sbBoot.finished = true;
+  clearTimeout(sbBoot.minTimer); clearTimeout(sbBoot.maxTimer); clearTimeout(sbBoot.stableTimer);
+  sbBootDetach();
+  const box = $("#sb"), el = $("#sb-boot");
+  if (el) { el.classList.add("out"); el.hidden = true; }
+  if (box) box.classList.remove("sb-booting");
+}
+
+/* 退出待机：外置品牌层先压黑，等竖屏转稳再淡出，避免从横屏直接闪回竖屏 */
+var SB_EXIT_MIN = 620, SB_EXIT_MAX = 1700, SB_EXIT_STABLE = 220;
+var sbExit = { gen: 0, armed: false, finished: true, started: 0, minTimer: 0, maxTimer: 0, stableTimer: 0 };
+
+function sbExitEnsure() {
+  let el = $("#sb-exit");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "sb-exit";
+  el.className = "sb-exit";
+  el.hidden = true;
+  el.setAttribute("aria-hidden", "true");
+  el.innerHTML = '<strong class="sb-boot-word">Wisdom</strong><em class="sb-boot-sub">黄杨科技</em>';
+  document.body.appendChild(el);
+  return el;
+}
+
+function sbExitDetach() {
+  window.removeEventListener("resize", sbExitNudge);
+  window.removeEventListener("orientationchange", sbExitNudge);
+}
+
+function sbExitNudge() {
+  if (!sbExit.armed || sbExit.finished) return;
+  clearTimeout(sbExit.stableTimer);
+  sbExit.stableTimer = setTimeout(sbExitTry, SB_EXIT_STABLE);
+}
+
+function sbExitTry() {
+  if (!sbExit.armed || sbExit.finished || document.hidden) return;
+  if (Date.now() - sbExit.started < SB_EXIT_MIN) return;
+  if (window.innerWidth > window.innerHeight + 1) return;   // 还横着就继续等转回竖屏
+  sbExitFinish();
+}
+
+function sbExitStart() {
+  const el = sbExitEnsure();
+  sbExit.gen++;
+  sbExit.armed = false;
+  sbExit.finished = false;
+  clearTimeout(sbExit.minTimer); clearTimeout(sbExit.maxTimer); clearTimeout(sbExit.stableTimer);
+  sbExitDetach();
+  el.hidden = false;
+  el.classList.remove("out");
+  el.setAttribute("aria-hidden", "false");
+  void el.offsetWidth;
+  el.classList.add("on");
+  document.body.classList.add("sb-exiting");
+}
+
+/* 等外置层完全压黑后，再撤待机、转回竖屏 */
+function sbExitArm() {
+  const gen = sbExit.gen;
+  const el = $("#sb-exit");
+  if (!el || gen !== sbExit.gen || sbExit.finished) return;
+  sbExit.armed = true;
+  sbExit.started = Date.now();
+  window.addEventListener("resize", sbExitNudge, { passive: true });
+  window.addEventListener("orientationchange", sbExitNudge, { passive: true });
+  sbExit.minTimer = setTimeout(sbExitTry, SB_EXIT_MIN);
+  sbExit.maxTimer = setTimeout(sbExitFinish, SB_EXIT_MAX);
+  sbExitTry();
+}
+
+function sbExitFinish() {
+  if (sbExit.finished) return;
+  sbExit.finished = true;
+  const gen = sbExit.gen;
+  clearTimeout(sbExit.minTimer); clearTimeout(sbExit.maxTimer); clearTimeout(sbExit.stableTimer);
+  sbExitDetach();
+  const el = $("#sb-exit");
+  if (!el || gen !== sbExit.gen) { document.body.classList.remove("sb-exiting"); return; }
+  el.classList.remove("on");
+  el.classList.add("out");
+  setTimeout(() => {
+    if (gen !== sbExit.gen) return;
+    el.hidden = true;
+    el.classList.remove("out");
+    el.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("sb-exiting");
+  }, 360);
+}
+
+function sbExitAbort() {
+  sbExit.gen++;
+  sbExit.armed = false;
+  sbExit.finished = true;
+  clearTimeout(sbExit.minTimer); clearTimeout(sbExit.maxTimer); clearTimeout(sbExit.stableTimer);
+  sbExitDetach();
+  const el = $("#sb-exit");
+  if (el) { el.hidden = true; el.classList.remove("on", "out"); el.setAttribute("aria-hidden", "true"); }
+  document.body.classList.remove("sb-exiting");
+}
+
 /* ---------- 舞台尺寸 / 安全区 ---------- */
 function sbLayout() {
   const s = sbState();
@@ -863,6 +1178,10 @@ function sbBindBackHold() {
   const fg = $("#sb-ring-fg");
   if (!btn) return;
   let raf = 0, t0 = 0, done = false;
+  const cpVideo = () => {
+    const page = document.querySelector('#sb .sb-p[data-p="6"]');
+    return !!page && page.dataset.cp === "video";
+  };
 
   const paint = (p) => {
     if (!fg) return;
@@ -892,6 +1211,11 @@ function sbBindBackHold() {
   btn.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     e.stopPropagation();
+    // CarPlay 里这颗按钮已经变成右上角的叉：一次点按直接停，不进长按环。
+    if (cpVideo()) {
+      btn.dataset.cpTap = "1";
+      return;
+    }
     if (sbState().pinned) return;
     const pk = $("#sb-peek"), due = $("#sb-due");
     if ((pk && !pk.classList.contains("hidden")) || (due && !due.classList.contains("hidden"))) {
@@ -912,6 +1236,13 @@ function sbBindBackHold() {
     if (!done) stop();
   };
   btn.addEventListener("pointerup", (e) => {
+    if (btn.dataset.cpTap) {
+      delete btn.dataset.cpTap;
+      stop();
+      e.stopPropagation();
+      sbCarPlayClose();
+      return;
+    }
     if (!done) {
       // 没按满就松手 = 当作一次轻点：先关面板，面板都关着就什么都不做（退出必须长按）
       stop();
@@ -929,7 +1260,7 @@ function sbBindBackHold() {
 
 function sbFlip() {
   const s = sbState();
-  if (s.pinned) return;
+  // 固定锁的是“页”，不是屏幕方向：CarPlay 里自动固定后仍然要能翻转。
   s.flip = !s.flip;
   sbLayout();
   if (SB_CP_LAST === 6) sbCarPlayMsg({ cmd: "geometry", flip: s.flip ? 1 : 0 });
@@ -1033,12 +1364,30 @@ function sbAutoRestore() {
 }
 
 /* ---------- 开关 ---------- */
+function sbRestorePrefs() {
+  const s = sbState();
+  if (s.prefsLoaded) return;
+  s.prefsLoaded = true;
+  try {
+    const p = Number(localStorage.getItem("sbPage"));
+    if (isFinite(p) && p >= 0 && p < SB_PAGES) s.page = p;
+    s.pinned = localStorage.getItem("sbPin") === "1";
+  } catch (e) {}
+  if (sbCpWant()) {
+    s.page = 6;
+    s.pinned = true;
+    s.pinAuto = true;
+  }
+}
+
 function sbOpen() {
   const s = sbState();
   sbBuild();
+  sbExitAbort();
   if (s.on) return;
-  // 进待机前先把可能残留的 CarPlay 原生层收掉，避免黑屏/触控被它挡住
-  try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
+  // 进待机前先把可能残留的 CarPlay 原生层收掉；如果是回来恢复 CarPlay，就不要先掐断。
+  if (!sbCpWant()) { try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {} }
+  sbRestorePrefs();
   const n = sbNow();
   s.day = n.day;
   s.on = true;
@@ -1046,10 +1395,13 @@ function sbOpen() {
   const box = $("#sb");
   document.body.classList.add("sb-on");
   try { localStorage.setItem("sbStay", "1"); } catch (e) {}
-  sbOrient(1);
-  if (!s.battTimer) s.battTimer = setInterval(() => { if (sbState().on && !document.hidden) sbAskBatt(); }, 60000);          // 待机一律横屏：壳把 SupportedInterfaceOrientations 切到 landscapeRight
+  // 先把黑底启动页顶上来，再请求转屏：转屏动画和第一次错位都藏在它下面
   box.classList.remove("hidden");
   box.setAttribute("aria-hidden", "false");
+  box.classList.add("on");
+  sbBootStart();
+  sbOrient(1);
+  if (!s.battTimer) s.battTimer = setInterval(() => { if (sbState().on && !document.hidden) sbAskBatt(); }, 60000);          // 待机一律横屏：壳把 SupportedInterfaceOrientations 切到 landscapeRight
   sbAskBatt();
   sbPaintBatt();
   if (typeof muSend === "function") muSend("start");   // 待机里那一页要镜像正在播放，先让壳开始 1Hz 推送
@@ -1057,11 +1409,13 @@ function sbOpen() {
   s.lastTurn = Date.now();
   sbLayout();
   sbPaintAll();
+  sbPaintPin();
+  sbPinHold();
   requestAnimationFrame(() => {
     if (!s.on) return;
-    box.classList.add("on");
     sbGo(s.page, true);   // 等舞台真正有宽度后再落位，避免开在第二页时停在中间
   });
+  if (sbCpWant()) setTimeout(() => { if (s.on) sbCpResume(); }, 900);
   // 壳转屏是异步的，转完尺寸才会变：这里再补一次落位，免得停在转屏前算出来的竖屏尺寸
   setTimeout(() => { if (s.on) { sbLayout(); sbPaintAll(); } }, 420);
   // 还竖着说明那一拍没转成功，再补一次（壳里第二拍一定会走 geometry 请求）
@@ -1088,14 +1442,16 @@ function sbClose(instant) {
   const s = sbState();
   if (!s.on) return;
   s.pinned = false;
+  s.pinAuto = false;
   clearInterval(s.pinTimer); s.pinTimer = null;
+  sbCpWantSet(false);
+  sbPinSave();
   sbPaintPin();
   if (SB_CP_LAST === 6) sbCarPlayMsg({ cmd: "stop" });
   s.on = false;
+  sbBootAbort();
   sbDimOff();
-  sbOrient(0);
   if (typeof muSend === "function") muSend("stop");
-  setTimeout(() => sbOrient(0), 600);   // 退出时也补一拍，别停在横屏里看竖屏页面
   sbDueHide();
   sbLyrClose(true);
   if (typeof sbMuPaneClose === "function") sbMuPaneClose(true);
@@ -1109,16 +1465,35 @@ function sbClose(instant) {
   const box = $("#sb");
   const pk0 = $("#sb-peek");
   if (pk0) { pk0.classList.remove("on"); pk0.classList.add("hidden"); }
-  document.body.classList.remove("sb-on");
-  try { localStorage.setItem("sbPage", String(s.page)); localStorage.setItem("sbStay", "0"); } catch (e) {}
+  try {
+    localStorage.setItem("sbPage", String(s.page));
+    localStorage.setItem("sbStay", "0");
+    localStorage.setItem("sbPin", "0");
+    localStorage.setItem("sbCpWant", "0");
+  } catch (e) {}
   if (!box) return;
-  box.classList.remove("on");
-  box.setAttribute("aria-hidden", "true");
-  const done = () => {
+  if (instant) {
+    document.body.classList.remove("sb-on");
+    box.classList.remove("on");
+    box.setAttribute("aria-hidden", "true");
     box.classList.add("hidden");
     box.classList.remove("sb-incog");
-  };
-  if (instant) done(); else setTimeout(done, 190);
+    return;
+  }
+  // 非瞬时退出：先让品牌退场层淡入压黑，再撤待机、转回竖屏，最后淡出露出主界面
+  sbExitStart();
+  const gen = sbExit.gen;
+  setTimeout(() => {
+    if (gen !== sbExit.gen) return;
+    document.body.classList.remove("sb-on");
+    box.classList.remove("on");
+    box.setAttribute("aria-hidden", "true");
+    box.classList.add("hidden");
+    box.classList.remove("sb-incog");
+    sbOrient(0);
+    setTimeout(() => { if (gen === sbExit.gen) sbOrient(0); }, 320);
+    sbExitArm();
+  }, 240);
 }
 
 function sbStartTimers() {
@@ -1136,7 +1511,13 @@ function sbVis() {
   const s = sbState();
   if (!s.on) return;
   if (document.hidden) { sbDimOff(); sbStopTimers(); }
-  else { sbStartTimers(); sbPaintAll(); sbIdleReset(); }
+  else {
+    sbStartTimers();
+    sbPaintAll();
+    sbPaintPin();
+    sbIdleReset();
+    if (sbCpWant()) setTimeout(() => { if (sbState().on) sbCpResume(); }, 520);
+  }
 }
 
 function sbKey(e) {
@@ -1160,7 +1541,12 @@ var SB_AUTO_TURN = 12000;
 
 function sbAutoTurn() {
   const s = sbState();
-  if (!s.on) return;
+  if (!s.on || s.pinned) return;
+  // CarPlay 一旦开始连接 / 出画面，这一页就定住：不再自动翻走，避免把车机画面切掉
+  if (s.page === 6) {
+    const cp = document.querySelector('#sb .sb-p[data-p="6"]');
+    if (cp && (cp.dataset.cp || "idle") !== "idle") return;
+  }
   const now = Date.now();
   if (now - (s.lastTouch || 0) < SB_AUTO_IDLE) return;
   if (now - (s.lastTurn || 0) < SB_AUTO_TURN) return;
@@ -1182,6 +1568,7 @@ function sbGo(i, silent, auto) {
   if (!track) return;
   const idx = Math.max(0, Math.min(SB_PAGES - 1, i));
   s.page = idx;
+  try { localStorage.setItem("sbPage", String(idx)); } catch (e) {}
   const w = track.clientWidth || 1;
   if (track.scrollLeft !== idx * w) {
     track.scrollTo({ left: idx * w, behavior: silent ? "auto" : "smooth" });
@@ -1205,6 +1592,7 @@ function sbScroll() {
   const idx = Math.max(0, Math.min(SB_PAGES - 1, Math.round(track.scrollLeft / w)));
   if (idx !== s.page) {
     s.page = idx;
+    try { localStorage.setItem("sbPage", String(idx)); } catch (e) {}
     sbPaintDots();
     if (idx === 1) { sbLoadWx(); sbLoadDash(); sbLoadQuotes(); sbLoadStocks(); }
     if (idx === 5) sbLoadWork();
@@ -2022,6 +2410,112 @@ function sbHrPath(arr, w, h, px) {
   return `M${pts.join(" L")}`;
 }
 
+/* CarPlay 右侧心率卡（旧壳兜底）：只在页面 6 视频态、右侧黑边够宽、
+   且壳没声明 cpHeart 能力时出现；新壳原生卡一出现，这一张自动隐藏。 */
+function sbHrPathV(arr, w, h, px, py) {
+  const vs = arr.map((x) => x.v);
+  let lo = Math.min(...vs), hi = Math.max(...vs);
+  if (hi - lo < 10) { const mid = (hi + lo) / 2; lo = mid - 5; hi = mid + 5; }
+  lo -= 2; hi += 2;
+  const mid = w / 2, half = Math.max(5, w / 2 - px);
+  const pts = arr.map((x, i, a) => {
+    const k = a.length > 1 ? i / (a.length - 1) : 0.5;
+    const yy = py + k * (h - py * 2);
+    const xx = mid + (((x.v - lo) / (hi - lo)) - 0.5) * half * 2;
+    return { x: xx, y: yy };
+  });
+  const last = pts[pts.length - 1];
+  if (pts.length === 1) return { d: `M${last.x.toFixed(1)},${last.y.toFixed(1)}`, x: last.x, y: last.y };
+  let d = `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const c = pts[i], n = pts[i + 1];
+    const mx = (c.x + n.x) / 2, my = (c.y + n.y) / 2;
+    d += ` Q${c.x.toFixed(1)},${c.y.toFixed(1)} ${mx.toFixed(1)},${my.toFixed(1)}`;
+  }
+  d += ` L${last.x.toFixed(1)},${last.y.toFixed(1)}`;
+  return { d, x: last.x, y: last.y };
+}
+
+let sbCplIx = 0;
+function sbCpCarouselPaint() {
+  const card = $("#sb-cp-hr");
+  if (!card) return;
+  const pages = card.querySelectorAll(".sb-cpl-page");
+  const dots = card.querySelectorAll(".sb-cpl-dots i");
+  pages.forEach((p, i) => p.classList.toggle("on", i === sbCplIx));
+  dots.forEach((d, i) => d.classList.toggle("on", i === sbCplIx));
+}
+function sbCpCarouselTick() {
+  const card = $("#sb-cp-hr");
+  if (!card || card.hidden) return;
+  const page = document.querySelector('#sb .sb-p[data-p="6"]');
+  if (!page || page.dataset.cp !== "video") return;
+  sbCplIx = (sbCplIx + 1) % 4;
+  sbCpCarouselPaint();
+}
+setInterval(sbCpCarouselTick, 5200);
+
+function sbCpHeartPaint() {
+  const card = $("#sb-cp-hr");
+  if (!card) return;
+  const nativeHasCard = !!(window.wkNativeCap && window.wkNativeCap.cpHeart);
+  const page = document.querySelector('#sb .sb-p[data-p="6"]');
+  const live = !!page && page.dataset.cp === "video" && !nativeHasCard;
+  const s = sbState();
+  const now = Date.now();
+  const list = (s.hr || []).filter((x) => now - x.t >= 0 && now - x.t < 60 * 1000);
+  const last = list.length ? list[list.length - 1] : null;
+  const fresh = last && now - last.t < 90 * 1000;
+  if (!live || !fresh) { card.hidden = true; return; }
+
+  const vw = innerWidth, vh = innerHeight;
+  const short = Math.min(vw, vh);
+  let sw = short * 16 / 9;
+  if (sw > Math.max(vw, vh)) sw = Math.max(vw, vh);
+  const stageRight = (vw + sw) / 2;
+  const band = vw - stageRight;
+  if (band < 60) { card.hidden = true; return; }
+  if (card.hidden) sbCplIx = 0;
+  card.style.width = Math.round(band) + "px";
+  card.hidden = false;
+
+  const bpm = Math.round(last.v);
+  const idx = sbHrZoneIdx(bpm);
+  const z = SB_HR_ZONES[idx];
+  const inner = Math.round(band) - 16;
+  const b = $("#sb-cph-bpm");
+  if (b) {
+    b.textContent = String(bpm);
+    const size = inner < 54 ? 22 : (bpm >= 100 ? 22 : 26);
+    b.style.fontSize = size + "px";
+    b.style.lineHeight = (size + 1) + "px";
+  }
+  card.style.setProperty("--beat", Math.max(0.55, Math.min(1.3, 60 / Math.max(45, bpm))) + "s");
+
+  const zv = $("#sb-cpl-v-zone"); if (zv) zv.textContent = z.name;
+  const zu = $("#sb-cpl-u-zone"); if (zu) zu.textContent = "Z" + (idx + 1);
+
+  const arr = list.slice(-22);
+  const g = sbHrPathV(arr, 100, 100, 8, 4);
+  const sc = $("#sb-cph-path"), area = $("#sb-cph-area"), endDot = $("#sb-cph-dot");
+  if (sc) sc.setAttribute("d", g.d);
+  if (area) area.setAttribute("d", g.d ? g.d + " L50,96 L50,4 Z" : "");
+  if (endDot) { endDot.setAttribute("cx", g.x.toFixed(1)); endDot.setAttribute("cy", g.y.toFixed(1)); }
+
+  const all = (s.hr || []).filter((x) => now - x.t >= 0 && now - x.t < 15 * 60 * 1000);
+  const rng = $("#sb-cpl-v-range");
+  if (rng) {
+    rng.textContent = all.length >= 2
+      ? Math.round(Math.min(...all.map((x) => x.v))) + "–" + Math.round(Math.max(...all.map((x) => x.v)))
+      : "—";
+  }
+  const peak = $("#sb-cpl-v-peak"), avg = $("#sb-cpl-v-avg");
+  if (peak) peak.textContent = all.length ? String(Math.round(Math.max(...all.map((x) => x.v)))) : "—";
+  if (avg) avg.textContent = all.length ? String(Math.round(all.reduce((a, x) => a + x.v, 0) / all.length)) : "—";
+  sbCpCarouselPaint();
+}
+window.addEventListener("resize", () => { if (typeof sbCpHeartPaint === "function") sbCpHeartPaint(); });
+
 /* 近 30 分钟的强度账：按分钟分桶取均值，再用最大心率的百分比判强度。
    WHO / Apple 的口径——中强度 1 分钟记 1 分钟，高强度 1 分钟记 2 分钟。
    这里只做「够不够、练了多久」的提示，不替用户下训练结论。 */
@@ -2127,6 +2621,7 @@ function sbPaintHr() {
   }
   s.hrZone = idx >= 0 && recent ? idx : -1;
   sbPaintHrStats();
+  sbCpHeartPaint();
 }
 
 function sbPaintWorkout() {
