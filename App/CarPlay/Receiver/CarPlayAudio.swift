@@ -81,6 +81,13 @@ final class CarPlayAudio {
     private static var playingStreams = 0
     #if os(iOS)
     private static var hasSpeakerOverride = false
+
+    /// 手机已连的蓝牙耳机 / 车机蓝牙 / 音响 / AirPlay / 有线耳机优先，存在就不抢回扬声器。
+    private static func hasExternalAudio(_ session: AVAudioSession) -> Bool {
+        let external: Set<AVAudioSession.Port> = [.bluetoothA2DP, .bluetoothLE, .bluetoothHFP,
+                                                  .airPlay, .headphones, .usbAudio, .lineOut]
+        return session.currentRoute.outputs.contains { external.contains($0.portType) }
+    }
     #endif
     var onLog: ((String) -> Void)?
     var onBrowserAudio: ((AVAudioPCMBuffer, UInt64) -> Void)?
