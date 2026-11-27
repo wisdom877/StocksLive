@@ -23,11 +23,16 @@ struct DndActivityAttributes: ActivityAttributes {
         /// 轮播时的标题 / 副标题覆写；空字符串表示沿用 attributes 里的固定值
         var line1: String
         var line2: String
+        /// 实时心率：没有样本时为 nil，卡片就不画曲线（不造假波形）
+        var bpm: Int?
+        /// 最近一段采样（约 24 点），卡片里画成 sparkline
+        var hr: [Double]?
 
         init(endAt: Date?, big: String = "", small: String = "", tone: Int = 0,
              progress: Double = -1, ringText: String = "", badge: String = "",
              leftText: String = "", rightText: String = "",
-             line1: String = "", line2: String = "") {
+             line1: String = "", line2: String = "",
+             bpm: Int? = nil, hr: [Double]? = nil) {
             self.endAt = endAt
             self.big = big
             self.small = small
@@ -39,6 +44,8 @@ struct DndActivityAttributes: ActivityAttributes {
             self.rightText = rightText
             self.line1 = line1
             self.line2 = line2
+            self.bpm = bpm
+            self.hr = hr
         }
     }
     var title: String

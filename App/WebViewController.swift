@@ -721,7 +721,9 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             leftText: body["left"] as? String ?? "",
             rightText: body["right"] as? String ?? "",
             line1: body["line1"] as? String ?? "",
-            line2: body["line2"] as? String ?? ""
+            line2: body["line2"] as? String ?? "",
+            bpm: (body["bpm"] as? NSNumber)?.intValue,
+            hr: (body["hr"] as? [NSNumber])?.map { $0.doubleValue }
         )
     }
 }

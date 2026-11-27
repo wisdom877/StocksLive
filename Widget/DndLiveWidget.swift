@@ -11,7 +11,8 @@ struct DndLiveWidget: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Leading(context: context, size: 30)
+                    HrCurve(samples: context.state.hr ?? [], bpm: context.state.bpm,
+                            height: 18, width: 46, showValue: false)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     VStack(alignment: .leading, spacing: 1) {
@@ -28,7 +29,8 @@ struct DndLiveWidget: Widget {
                     BarView(context: context)
                 }
             } compactLeading: {
-                CompactLeading(context: context)
+                HrCurve(samples: context.state.hr ?? [], bpm: context.state.bpm,
+                        height: 10, width: 22, showValue: false)
             } compactTrailing: {
                 BigText(context: context).font(.caption).lineLimit(1).minimumScaleFactor(0.6).frame(maxWidth: 56)
             } minimal: {
@@ -60,18 +62,25 @@ struct WatchCard: View {
     let context: ActivityViewContext<DndActivityAttributes>
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Leading(context: context, size: 32)
+        HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(dLine1(context))
-                    .font(.system(size: 11, weight: .semibold))
-                    .lineLimit(1).minimumScaleFactor(0.65)
+                HStack(spacing: 5) {
+                    if !context.state.ringText.isEmpty {
+                        Text(context.state.ringText)
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundStyle(toneColor(context.state.tone))
+                    }
+                    Text(dLine1(context))
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1).minimumScaleFactor(0.65)
+                }
                 BigText(context: context)
                     .font(.system(size: 19, weight: .semibold, design: .rounded))
                     .lineLimit(1).minimumScaleFactor(0.55)
                 BarView(context: context, showsEnds: false, height: 2)
             }
             Spacer(minLength: 0)
+            HrCurve(samples: context.state.hr ?? [], bpm: context.state.bpm, height: 22, width: 62)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -83,9 +92,13 @@ struct PhoneCard: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            Leading(context: context, size: 40)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if !context.state.ringText.isEmpty {
+                        Text(context.state.ringText)
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(toneColor(context.state.tone))
+                    }
                     Text(dLine1(context))
                         .font(.footnote).fontWeight(.semibold)
                         .lineLimit(1).minimumScaleFactor(0.75)
@@ -113,6 +126,9 @@ struct PhoneCard: View {
                 }
                 BarView(context: context)
             }
+            if context.state.progress >= 0 || !(context.state.hr ?? []).isEmpty {
+                HrCurve(samples: context.state.hr ?? [], bpm: context.state.bpm, height: 26, width: 66)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -129,54 +145,41 @@ private func toneColor(_ tone: Int) -> Color {
     }
 }
 
-private func iconName(_ kind: String) -> String {
-    switch kind {
-    case "focus": return "brain.head.profile"
-    case "shift": return "briefcase.fill"
-    case "market": return "chart.line.uptrend.xyaxis"
-    default: return "moon.fill"
-    }
-}
-
-/// 左侧：有环形进度就画环（环里写 2/3），否则画图标
-struct Leading: View {
-    let context: ActivityViewContext<DndActivityAttributes>
-    let size: CGFloat
+/// 实时心率曲线：只有真采样才画；没数据就整块消失（不占位、不造假波形）
+struct HrCurve: View {
+    let samples: [Double]
+    var bpm: Int?
+    var height: CGFloat = 22
+    var width: CGFloat = 62
+    var showValue: Bool = true
 
     var body: some View {
-        if context.state.progress >= 0 && !context.state.ringText.isEmpty {
-            ZStack {
-                Circle().stroke(Color.white.opacity(0.18), lineWidth: 3)
-                Circle()
-                    .trim(from: 0, to: min(max(context.state.progress, 0.02), 1))
-                    .stroke(toneColor(context.state.tone), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                Text(context.state.ringText)
-                    .font(.system(size: size * 0.26, weight: .semibold, design: .rounded))
-                    .minimumScaleFactor(0.6)
+        if samples.count >= 3 {
+            VStack(alignment: .trailing, spacing: 1) {
+                Canvas { ctx, size in
+                    var lo = samples.min() ?? 0, hi = samples.max() ?? 0
+                    if hi - lo < 10 { let mid = (hi + lo) / 2; lo = mid - 5; hi = mid + 5 }
+                    let span = max(1, hi - lo)
+                    let pts = samples.enumerated().map { i, v in
+                        CGPoint(x: size.width * CGFloat(i) / CGFloat(samples.count - 1),
+                                y: size.height - 1 - CGFloat((v - lo) / span) * (size.height - 3))
+                    }
+                    var path = Path()
+                    path.addLines(pts)
+                    ctx.stroke(path, with: .color(.white.opacity(0.85)),
+                               style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+                    if let last = pts.last {
+                        ctx.fill(Path(ellipseIn: CGRect(x: last.x - 1.6, y: last.y - 1.6, width: 3.2, height: 3.2)),
+                                 with: .color(.white.opacity(0.9)))
+                    }
+                }
+                .frame(width: width, height: height)
+                if showValue, let b = bpm, b > 0 {
+                    Text("\(b) BPM")
+                        .font(.system(size: 8.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
             }
-            .frame(width: size, height: size)
-        } else {
-            Image(systemName: iconName(context.attributes.kind))
-                .font(.system(size: size * 0.55, weight: .semibold))
-                .foregroundStyle(toneColor(context.state.tone))
-                .frame(width: size, height: size)
-        }
-    }
-}
-
-struct CompactLeading: View {
-    let context: ActivityViewContext<DndActivityAttributes>
-
-    var body: some View {
-        if context.state.progress >= 0 && !context.state.ringText.isEmpty {
-            Image(systemName: "circle.dashed")
-                .font(.caption)
-                .foregroundStyle(toneColor(context.state.tone))
-        } else {
-            Image(systemName: iconName(context.attributes.kind))
-                .font(.caption)
-                .foregroundStyle(toneColor(context.state.tone))
         }
     }
 }
