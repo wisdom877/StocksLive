@@ -1,0 +1,10 @@
+[Unit]
+Description=每分钟触发一次 stock-site 截止提醒
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=5s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

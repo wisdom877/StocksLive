@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>黄杨工作台</title>
+<link rel="apple-touch-icon" sizes="180x180" href="static/icon-180.png">
+<link rel="icon" type="image/png" sizes="512x512" href="static/icon-512.png">
+<link rel="manifest" href="static/manifest.webmanifest">
+<meta name="application-name" content="黄杨工作台">
+<script>/* 主题先定：某些 WebView 不上报 prefers-color-scheme，页面自己把 html[data-theme] 摆好，
+   后面的 CSS 只按这个属性取色，系统外观只在「跟随系统」时作为初值 */
+(function(){var m="auto";try{m=localStorage.getItem("appTheme")||"auto"}catch(e){}
+var d=m==="dark"||(m!=="light"&&window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches);
+document.documentElement.setAttribute("data-theme",d?"dark":"light");})();</script>
+<link rel="stylesheet" href="static/style.css?v=101">
+</head>
+<body>
+<script>
+/* 启动兜底：外链脚本被 WebView 缓存成半截或网络打断时，页面会永久停在「正在加载…」。
+   这里用内联脚本（不依赖外链）做一个硬超时：10s 没进界面就自动重载一次，
+   再不行就明确报失败，至少不会一直转圈。 */
+window.__bootGuard = setTimeout(function () {
+  var sp = document.getElementById("splash");
+  if (!sp) return;
+  var tip = sp.querySelector(".sp-tip");
+  var n = +(sessionStorage.getItem("bootReload") || 0);
+  if (n < 1) {
+    sessionStorage.setItem("bootReload", "1");
+    if (tip) tip.textContent = "载入超时，正在重新载入…";
+    setTimeout(function () { location.reload(); }, 1200);
+  } else if (tip) {
+    tip.textContent = "载入失败，关掉 App 重新打开";
+  }
+}, 10000);
+</script>
+<div id="splash"><div class="sp-mark"><svg viewBox="0 0 48 48" fill="none"><rect x="1.6" y="1.6" width="44.8" height="44.8" rx="12" stroke="currentColor" stroke-width="1.1" opacity=".22"/><path d="M10 33 18.6 23.2l5.8 5.6L38 13.6" stroke="#e5484d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M30.5 13.2h8v8" stroke="#e5484d" stroke-width="2.2" stroke-linecap="round"/></svg></div><div class="sp-name">黄杨工作台</div><div class="sp-tip">正在加载…</div></div>
+
+<!-- 登录（APK 不会看到，?k= 自动登录） -->
+<section id="login" class="login hidden">
+  <div class="login-card">
+    <div class="login-mark"><svg viewBox="0 0 48 48" fill="none"><rect x="1.6" y="1.6" width="44.8" height="44.8" rx="12" stroke="currentColor" stroke-width="1.1" opacity=".22"/><path d="M10 33 18.6 23.2l5.8 5.6L38 13.6" stroke="#e5484d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M30.5 13.2h8v8" stroke="#e5484d" stroke-width="2.2" stroke-linecap="round"/></svg></div>
+    <h1>黄杨工作台</h1>
+    <p class="muted">报告 · 持仓 · 关注 · 想法</p>
+    <form id="login-form">
+      <input id="pw" type="password" placeholder="访问密码" autocomplete="current-password" required>
+      <button class="btn primary" type="submit">进入</button>
+      <p id="login-err" class="err"></p>
+    </form>
+    <div class="ver-tag" data-ver hidden></div>
+  </div>
+</section>
+
+<!-- 主应用 -->
+<div id="app" class="hidden">
+  <header class="topbar">
+    <div class="top-left">
+      <button id="btn-cal" class="icon-btn" title="日程" aria-label="日程"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2.6" y="4.5" width="14.8" height="12.9" rx="3.2"/><path d="M2.6 8.6h14.8" opacity=".4"/><path d="M6.5 2.7v2.9M13.5 2.7v2.9"/><circle cx="9.9" cy="12.7" r="1.7" fill="currentColor" stroke="none" opacity=".5"/></svg></button>
+      <button id="btn-notes" class="icon-btn" title="记录" aria-label="记录"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="4.6" cy="5.6" r="1.3" fill="currentColor" stroke="none" opacity=".55"/><path d="M8.2 5.6h7.6"/><circle cx="4.6" cy="10" r="1.3" fill="currentColor" stroke="none" opacity=".55"/><path d="M8.2 10h7.6"/><circle cx="4.6" cy="14.4" r="1.3" fill="currentColor" stroke="none" opacity=".55"/><path d="M8.2 14.4h7.6"/></svg></button>
+      <button id="btn-gsearch" class="icon-btn" title="全局搜索" aria-label="全局搜索"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="8.6" cy="8.6" r="5.7"/><path d="M12.9 12.9l4.1 4.1" stroke-width="2"/></svg></button>
+    </div>
+    <!-- 左右两枚药丸中间的长条：先留空备用，将来放「今日状态 / 倒计时」这类一句话信息；
+         材质和两边完全同一套，不许另起一套底 -->
+    <div class="top-mid" id="top-mid" aria-hidden="true"></div>
+    <div class="top-right">
+      <!-- 回收站 / 退出是低频操作，收进右侧「更多」，顶栏只留高频入口 -->
+      <button id="btn-more" class="icon-btn" title="更多" aria-label="更多"><svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor"><circle cx="4.4" cy="10" r="1.45"/><circle cx="10" cy="10" r="1.45"/><circle cx="15.6" cy="10" r="1.45"/></svg></button>
+      <button id="trash" class="hidden" aria-hidden="true" tabindex="-1"></button>
+      <button id="logout" class="hidden" aria-hidden="true" tabindex="-1"></button>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- 1 资讯：日程 -->
+    <section id="view-feed" class="view">
+      <!-- 新闻功能已按要求下线（代码保留，恢复时取消注释、并把 app.js 的 NEWS_ON 改回 true）：
+      <div class="seg" id="info-seg">
+        <button data-itab="news" class="on">新闻</button>
+      </div>
+
+      <div id="info-news">
+        <div class="page-tools">
+          <span id="live-at" class="tiny muted" style="flex:1"></span>
+        </div>
+        <div id="live-days" class="chips date-chips range-chips"></div>
+        <div id="live-levels" class="chips chips-row live-tags"></div>
+        <div id="live-tags" class="chips chips-row live-tags"></div>
+        <div id="live-list"></div>
+      </div>
+      -->
+
+      <div id="info-focus">
+        <div class="focus-card" id="events-card">
+          <div id="focus-events" class="focus-events"></div>
+          <button type="button" class="fc-add" id="ev-add" aria-label="添加日程"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span>添加日程</span></button>
+        </div>
+        <!-- 新闻/关注条目卡已按要求下线（代码保留，取消注释即可恢复）：
+        <div class="focus-card">
+          <div id="news-focus"></div>
+          <button type="button" class="fc-add" id="btn-focus-add" aria-label="添加">＋</button>
+        </div>
+        -->
+      </div>
+    </section>
+
+    <!-- 2 持仓 / 行情 -->
+    <section id="view-hold" class="view hidden">
+      <div class="seg" id="hold-seg">
+        <button data-tab="mine" class="on">我的持仓</button>
+        <button data-tab="watch">自选</button>
+        <button data-tab="market">市场</button>
+      </div>
+      <div id="hold-mine">
+      <div id="hold-tags" class="chips chips-row tag-filter"></div>
+      <div id="dash" class="dash">
+        <div id="hold-sum" class="hold-sum" hidden></div>
+      </div>
+      <div id="hold-list"><div class="list-skel" aria-hidden="true"><i></i><i></i><i></i></div></div>
+      </div>
+
+      <div id="hold-market" class="hidden">
+        <div class="seg sub" id="mkt-seg">
+          <button data-mtab="quote" class="on">行情</button>
+          <button data-mtab="hot">板块</button>
+          <button data-mtab="analysis">分析</button>
+        </div>
+        <div id="mkt-quote">
+          <div class="mkt-bar">
+            <span id="mkt-at" class="tiny muted"></span>
+          </div>
+          <div id="mkt-skel" class="mkt-skel hidden" aria-hidden="true">
+            <div class="sk sk-card"></div>
+            <div class="sk sk-line"></div>
+            <div class="sk sk-line w70"></div>
+            <div class="sk sk-grid"><i></i><i></i><i></i><i></i></div>
+          </div>
+          <div id="mkt-err" class="mkt-err hidden">
+            <span class="mkt-err-txt">行情获取失败，上游可能超时</span>
+            <button type="button" class="btn small" id="mkt-retry">重试</button>
+          </div>
+          <div id="mkt-turnover"></div>
+          <div class="section-head"><h2>跨市场</h2><span id="mkt-global-at" class="tiny muted"></span></div>
+          <div class="chips xmkt-seg" id="xmkt-seg">
+            <button type="button" class="chip on" data-mk="a">A股</button>
+            <button type="button" class="chip" data-mk="hk">港股</button>
+            <button type="button" class="chip" data-mk="us">美股</button>
+            <button type="button" class="chip" data-mk="global">全球</button>
+          </div>
+          <div class="card global-strip"><div id="mkt-global"></div></div>
+          <div class="section-head"><h2>排行</h2><span id="rank-at" class="tiny muted"></span></div>
+          <div class="chips rank-seg" id="rank-seg">
+            <button type="button" class="chip on" data-by="pct">涨幅</button>
+            <button type="button" class="chip" data-by="amount">成交额</button>
+            <button type="button" class="chip" data-by="turnover">换手</button>
+          </div>
+          <div class="chips rank-filter" id="rank-filter">
+            <button type="button" class="chip" data-f="pct3">涨幅 ≥3%</button>
+            <button type="button" class="chip" data-f="amt1">成交额 ≥1亿</button>
+            <button type="button" class="chip" data-f="pe20">PE ≤20</button>
+          </div>
+          <div id="rank-list" class="rank-list"></div>
+          <div class="section-head"><h2>期货商品</h2><span id="mkt-commodity-at" class="tiny muted"></span></div>
+          <div id="mkt-commodity" class="cmd-grid"></div>
+        </div>
+        <div id="mkt-analysis-panel" class="hidden"><div id="mkt-analysis"></div></div>
+      <div id="mkt-hot" class="hidden">
+        <!-- 二级原来有「昨日热门/今日热门/热门分析」三档；热门分析的内容源已随旧日报体系删除，
+             永久是空面板，整档注销；剩下的今/昨两档降级成一排小 chips，不再占一层 tab -->
+        <div class="chips hot-tabs" id="hot-seg">
+          <button class="chip on" data-tab="today">今日</button>
+          <button class="chip" data-tab="yesterday">昨日</button>
+        </div>
+        <div id="hot-body"></div>
+        <div id="hot-analysis" class="hidden"></div>
+      </div>
+      </div>
+
+      <div id="hold-watch" class="hidden">    
+      <div class="seg sub" id="watch-seg">
+        <button data-tab="mine" class="on">关注</button>
+        <!-- 热度榜已下线（代码保留，取消注释即可恢复）：
+        <button data-tab="heat">热度榜</button>
+        -->
+        <!-- 2026-11-14 用户主玩 ETF：原「趋势选股」改为「趋势选ETF」。恢复选股时改回文字，
+             并把 trend.py 顶部 MODE 改回 "stock"（两套缓存/历史分开存放，不会互相覆盖）。 -->
+        <button data-tab="trend">趋势选ETF</button>
+        <!-- 标签选股整体注销（代码保留，取消注释即可恢复）：
+        <button data-tab="tag">标签选股</button>
+        -->
+      </div>
+
+      <div id="watch-mine">
+        <div id="watch-tags" class="chips chips-row tag-filter"></div>
+        <div id="watch-sum" class="group-sum"></div>
+        <div id="watch-list"></div>
+      </div>
+
+      <!-- 标签选股整体注销（未删除）：
+      <div id="watch-tagpick" class="hidden">
+        <div class="search-wrap">
+          <input id="tag-search" type="search" placeholder="输入板块/概念名，如 人形机器人、PCB" autocomplete="off" enterkeyhint="search">
+        </div>
+        <div id="tag-chips" class="chips chips-row tag-filter"></div>
+        <div class="seg tag-purity" id="tag-purity">
+          <button data-purity="all" class="on">全部</button>
+          <button data-purity="clean">核心+相关</button>
+          <button data-purity="core">只看核心</button>
+          <button data-purity="hidden">已隐藏</button>
+        </div>
+        <div class="seg tag-sort" id="tag-sort">
+          <button data-sort="purity" class="on">纯度</button>
+          <button data-sort="pct" title="今日涨幅从高到低">涨幅</button>
+          <button data-sort="float_cap">流通市值</button>
+          <button data-sort="pe" title="市盈率从低到高，亏损在后">市盈率</button>
+        </div>
+        <div id="tag-result-note" class="tiny muted" style="margin:4px 4px 8px"></div>
+        <div id="tag-list" class="list"></div>
+      </div>
+      -->
+
+      <!-- 热度榜已下线（未删除）：
+      <div id="watch-heat" class="hidden">
+        <div class="seg" id="heat-src">
+          <button data-src="ths" class="on">同花顺</button>
+          <button data-src="dfcf">东财</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin:0 4px 8px">
+          <span id="heat-note" class="tiny muted" style="flex:1"></span>
+        </div>
+        <div id="heat-list" class="list"></div>
+      </div>
+      -->
+
+      <div id="watch-trend" class="hidden">
+        <div class="trend-head">
+          <div id="trend-note" class="tiny muted"></div>
+          <div class="trend-crit tiny muted">连涨≥2 · 站上MA20 · MA20向上 · 多头排列 · ETF（剔除货币/债券，成交额≥2000万）</div>
+        </div>
+        <!-- 板块标签筛选已下线（卡片内标签仅展示，取消注释可恢复）：
+        <div id="trend-tags" class="chips chips-row trend-tag-filter"></div>
+        -->
+        <div id="trend-days" class="chips trend-day-filter"></div>
+        <div class="seg trend-sort" id="trend-sort">
+          <button data-sort="streak" data-label="连涨" class="on" title="连涨天数排序，再点切换正序/逆序">连涨</button>
+          <button data-sort="amount" data-label="成交额" title="今日成交额排序，再点切换正序/逆序">成交额</button>
+          <button data-sort="total" data-label="累计" title="连涨区间累计涨幅排序，再点切换正序/逆序">累计</button>
+          <button data-sort="pct" data-label="涨幅" title="今日涨幅排序，再点切换正序/逆序">涨幅</button>
+          <button data-sort="float_cap" data-label="规模" title="ETF 规模排序，再点切换正序/逆序">规模</button>
+        </div>
+        <div id="trend-list" class="list"></div>
+      </div>
+
+      </div>
+      <div class="ver-tag" data-ver hidden></div>
+    </section>
+
+    <!-- 4 记录 -->
+    <section id="view-note" class="view hidden">
+      <div id="note-kind-filter" class="seg note-kind-filter"></div>
+      <div id="note-stage-filter" class="chips note-stage-filter">
+        <button type="button" class="chip on" data-st="">全部</button>
+        <button type="button" class="chip" data-st="idea">想法</button>
+        <button type="button" class="chip" data-st="plan">计划</button>
+        <button type="button" class="chip" data-st="done">已执行</button>
+        <button type="button" class="chip" data-st="review">复盘</button>
+      </div>
+      <div class="card composer note-composer" id="composer">
+        <div class="chips" id="note-chips" hidden></div>
+        <div class="note-line">
+          <textarea id="note-text" rows="1" placeholder="想到什么就写下来…"></textarea>
+          <button type="button" class="note-ico" id="note-more-btn" title="标签 / 个股" aria-label="标签与个股">＋</button>
+          <button type="button" class="note-ico" id="note-ai-btn" title="把随手写的整理成一条记录" aria-label="整理">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.6l1.7 4.3L18 9.6l-4.3 1.7L12 15.6l-1.7-4.3L6 9.6l4.3-1.7z"/><path d="M18.4 15.2l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>
+          </button>
+          <button class="btn primary small" id="note-submit">记录</button>
+        </div>
+      </div>
+      <div class="note-filters">
+        <div id="note-days" class="chips date-chips"></div>
+        <div id="note-tags-filter" class="chips chips-row tag-filter note-tag-filter"></div>
+      </div>
+      <div id="notes" class="list"></div>
+      <div class="ver-tag" data-ver hidden></div>
+    </section>
+    <section id="view-work" class="view hidden">
+      <div class="wk-head">
+        <div class="wk-hl"><b>工作</b><span id="wk-stat" class="wk-stat"></span></div>
+        <div class="wk-hr"><button type="button" class="wk-bell" id="wk-ai" title="AI 助手" aria-label="AI 助手"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.6l1.7 4.3L18 9.6l-4.3 1.7L12 15.6l-1.7-4.3L6 9.6l4.3-1.7z"/><path d="M18.4 15.2l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg></button></div>
+      </div>
+      <button type="button" class="wk-next hidden" id="wk-next"></button>
+      <div class="seg wk-seg" id="wk-seg" role="tablist">
+        <button type="button" class="on" data-wkseg="sch" role="tab">安排</button>
+        <button type="button" data-wkseg="focus" role="tab">专注</button>
+        <button type="button" data-wkseg="shift" role="tab">班表</button>
+      </div>
+      <div class="wk-pane" id="wk-pane-sch">
+        <div id="wk-cal" class="wk-cal"></div>
+        <div class="wk-daybar" id="wk-daybar"></div>
+        <div class="chips chips-row wk-types" id="wk-types"></div>
+        <div id="wk-list" class="wk-list"></div>
+        <button type="button" class="wk-add" id="wk-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span>新建日程</span></button>
+      </div>
+      <div class="wk-pane hidden" id="wk-pane-focus">
+        <div id="wk-focus-run"></div>
+        <div id="wk-focus-list" class="wk-list"></div>
+        <button type="button" class="wk-add" id="wk-add-focus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span>新建专注模式</span></button>
+      </div>
+      <div class="wk-pane hidden" id="wk-pane-shift">
+        <div id="wk-shift-card"></div>
+        <div class="wk-ov-entry" id="wk-ov-entry" role="button" tabindex="0" aria-label="数据总览"></div>
+        <button type="button" class="wk-add wk-add-quiet" id="wk-shift-set"><span>班次与轮转设置</span></button>
+        <div class="wk-tip" style="margin-top:10px">月历在「安排」里：点一天就只看那天的日程，长按一天看/改当天的班次。</div>
+      </div>
+      <div class="ver-tag" data-ver hidden></div>
+    </section>
+  </main>
+
+  <!-- 到点提醒的全屏闹钟 -->
+  <div id="wk-alarm" class="wk-alarm hidden" role="dialog" aria-modal="true">
+    <div class="wka-card">
+      <div class="wka-k"><span class="wka-dot"></span><span id="wka-kind">日程到点</span></div>
+      <div class="wka-t" id="wka-title"></div>
+      <div class="wka-m" id="wka-meta"></div>
+      <div class="wka-acts">
+        <button type="button" class="btn ghost" data-wka-snooze>10 分钟后再提醒</button>
+        <button type="button" class="btn primary" data-wka-off>知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <nav class="tabbar">
+    <!-- 资讯页已并入顶栏日历（#btn-cal），底部不再留页签：
+    <button data-view="feed" class="on"><i>◎</i><span>资讯</span></button>
+    -->
+    <button data-view="hold" class="on"><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17.5 9 11l4 4.2 7-7.7" stroke-linecap="round"/><path d="M4 20.5h16" stroke-linecap="round" opacity=".45"/></svg></i><span>行情</span></button>
+    <!-- 用户点新闻频率更高：新闻放到底部第三格（原记录的位置），记录入口移到顶栏 ✎ -->
+    <button data-view="work" id="tab-work"><i><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.4" y="6.6" width="17.2" height="12.8" rx="3"/><path d="M8.6 6.6V4.9h6.8v1.7M3.4 12h17.2" stroke-linecap="round"/></svg></i><span>工作</span></button>
+    <button id="tab-news" type="button"><i><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.6" y="5" width="16.8" height="14" rx="2.6"/><path d="M6.8 9.4h10M6.8 12.6h10M6.8 15.8h6" stroke-linecap="round"/></svg></i><span>新闻</span></button>
+  </nav>
+</div>
+
+<!-- 全局搜索 -->
+<div id="wk-ov" class="wk-ov hidden">
+  <!-- 顶栏跟行情/工作页同一套：整条透明，只有图标自带胶囊底，反着压一层实底就等于另一个标准 -->
+  <header class="topbar wk-ov-nav">
+    <div class="top-left">
+      <button type="button" class="icon-btn" id="wk-ov-back" title="返回工作" aria-label="返回工作"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12.4 4.4 6.8 10l5.6 5.6"/></svg></button>
+    </div>
+    <div class="wk-ov-t"><span class="wk-ov-h">数据总览</span><span class="wk-ov-sum" id="wk-ov-sum"></span></div>
+    <div class="top-right">
+      <button type="button" class="icon-btn" id="wk-ov-ai" title="AI 筛选" aria-label="AI 筛选"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.6l1.7 4.3L18 9.6l-4.3 1.7L12 15.6l-1.7-4.3L6 9.6l4.3-1.7z"/><path d="M18.4 15.2l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg></button>
+    </div>
+  </header>
+  <div class="wk-ov-body">
+    <!-- 筛选条整块浮起：往下滑的时候范围/模式/指标不动 -->
+    <div class="wk-ov-fil" id="wk-ov-fil">
+      <div class="chips wk-ov-chips" id="wk-ov-range"></div>
+      <div class="chips wk-ov-chips wk-ov-modechips" id="wk-ov-modes"></div>
+      <div class="chips wk-ov-chips" id="wk-ov-metric"></div>
+    </div>
+    <!-- 只有热力图这块滚，筛选条在上面不动（等于悬浮的导航栏） -->
+    <div class="wk-ov-scroll">
+      <div class="wk-heat" id="wk-ov-heat"></div>
+      <div class="wk-ov-legend" id="wk-ov-legend"></div>
+      <div class="wk-ov-stat" id="wk-ov-stat"></div>
+      <div class="wk-ov-hint" id="wk-ov-hint"></div>
+    </div>
+  </div>
+</div>
+<div id="gsearch" class="gsearch hidden">
+  <div class="gs-head">
+    <div class="search-wrap">
+      <input id="gs-input" type="search" placeholder="搜索代码、基金或新闻" autocomplete="off" enterkeyhint="search">
+    </div>
+    <button class="btn ghost small" id="gs-cancel">取消</button>
+  </div>
+  <div id="gs-info" class="tiny muted gs-info"></div>
+  <div id="gs-body" class="gs-body"></div>
+</div>
+
+<!-- 新闻页：和行情/自选一样保留顶栏、底栏；搜索图标并入标签行 -->
+<div id="digest" class="gsearch hidden">
+  <div class="dg-head" id="dg-head">
+  <div class="chips dg-tabs" id="dg-tabs">
+    <button class="chip on" data-dgtab="digest">总结</button>
+    <!-- 原来「未读 / 已读」两页其实是一份列表的两种过滤，合并成一条资讯时间流 -->
+    <button class="chip" data-dgtab="inbox">资讯 <span id="dg-unread-n">0</span></button>
+    <button class="icon-btn dg-close" id="dg-close" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.9"><path d="M6 6l12 12M18 6l-12 12"/></svg></button>
+  </div>
+  <div class="chips dg-levels hidden" id="dg-levels"></div>
+  <div class="chips dg-slots hidden" id="dg-slots">
+    <button type="button" class="chip" data-dgslot="am">早</button>
+    <button type="button" class="chip" data-dgslot="pm">晚</button>
+    <label class="date-pick" id="dg-date-pick" tabindex="0" title="选择日期">
+      <span id="dg-date-label" class="date-pick-text"></span>
+      <svg class="date-pick-cal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4.5" width="18" height="16.5" rx="3"/><path d="M8 2.5v4M16 2.5v4M3 9.5h18"/></svg>
+      <input type="date" id="dg-date" class="date-pick-native" tabindex="-1" aria-label="选择日期">
+    </label>
+  </div>
+  </div>
+  <div id="dg-newbar" class="dg-newbar hidden"></div>
+  <div class="gs-body" id="dg-body"></div>
+  <div id="dg-pager" class="dg-pager hidden"></div>
+  <!-- 总结朗读：服务端生成 MP3，播放条固定在总结面板底部（底栏上方） -->
+  <div id="dg-player" class="dg-player hidden">
+    <div class="dgp-head">
+      <span class="dgp-title">朗读</span>
+      <div class="dgp-scopes">
+        <button type="button" class="chip on" data-dgscope="key">重点</button>
+        <button type="button" class="chip" data-dgscope="full">全文</button>
+      </div>
+      <span id="dgp-state" class="tiny muted"></span>
+      <button type="button" class="dgp-x" id="dgp-close" aria-label="关闭朗读">✕</button>
+    </div>
+    <div class="dgp-main">
+      <button type="button" class="dgp-play" id="dgp-play" aria-label="播放">▶</button>
+      <input type="range" id="dgp-seek" class="dgp-seek" min="0" max="0" value="0" step="0.1" aria-label="播放进度">
+      <span id="dgp-time" class="tiny muted">0:00 / 0:00</span>
+      <button type="button" class="dgp-rate" id="dgp-rate" aria-label="播放速度">1.0x</button>
+    </div>
+  </div>
+</div>
+
+<!-- 弹层 -->
+<div id="sheet" class="sheet hidden">
+  <div class="sheet-mask" data-close></div>
+  <div class="sheet-body">
+    <div class="sheet-head"><b id="sheet-title">编辑</b><button class="icon-btn" data-close>✕</button></div>
+    <div id="sheet-content"></div>
+  </div>
+</div>
+
+<!-- 二级弹层：在个股详情等弹层之上打开消息预览，关闭只收起这一层，不会连个股页一起退掉 -->
+<div id="sheet2" class="sheet subsheet hidden">
+  <div class="sheet-mask" data-close></div>
+  <div class="sheet-body">
+    <div class="sheet-head"><b id="sheet2-title">预览</b><button class="icon-btn" data-close>✕</button></div>
+    <div id="sheet2-content"></div>
+  </div>
+</div>
+
+<div id="selbar" class="selbar hidden">
+  <button class="btn ghost small" id="sel-all">全选</button>
+  <span id="sel-count" class="tiny"></span>
+  <button class="btn danger small" id="sel-del" disabled>删除</button>
+  <button class="btn ghost small" id="sel-cancel">取消</button>
+</div>
+
+<!-- 总结正文选中文字后的标注浮条 -->
+<div id="dg-markbar" class="dg-markbar hidden">
+  <button type="button" data-mk="red">标红</button>
+  <button type="button" data-mk="underline">下划线</button>
+  <button type="button" data-mk="note">批注</button>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="static/app-base.js?v=0" data-app="1"></script>
+<script src="static/app-detail.js?v=0"></script>
+<script src="static/app-note.js?v=0"></script>
+<script src="static/app-tag.js?v=0"></script>
+<script src="static/app-trend.js?v=0"></script>
+<script src="static/app-chart.js?v=0"></script>
+<script src="static/app-work.js?v=0"></script>
+<script src="static/app-standby.js?v=0"></script>
+<script src="static/app-boot.js?v=0"></script>
+</body>
+</html>

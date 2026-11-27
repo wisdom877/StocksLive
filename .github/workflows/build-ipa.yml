@@ -1,13 +1,32 @@
 name: build-unsigned-ipa
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
 
 jobs:
+  web-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Web 源码语法检查
+        run: |
+          python3 -m compileall -q web
+          for f in web/static/app-*.js; do node --check "$f"; done
+
   build:
+    needs: web-check
     runs-on: macos-15-intel
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: 安装 xcodegen
@@ -22,4 +41,4 @@ jobs:
         with:
           name: StocksLive-unsigned-ipa
           path: build/StocksLive-unsigned.ipa
-          retention-days: 3
+          retention-days: 14

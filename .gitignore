@@ -1,5 +1,35 @@
+# ---- iOS ----
 build/
 DerivedData/
 *.xcarchive
 App/CarPlay/Identity/*
 !App/CarPlay/Identity/.gitkeep
+
+# ---- Web 运行数据与密钥 ----
+web/data/*
+!web/data/fund_codes.json
+!web/data/digest_prompt.txt
+!web/data/em_calendar.json
+web/**/*.db
+web/**/*.db-*
+web/**/*.log
+web/**/*.bak*
+web/__pycache__/
+web/**/__pycache__/
+web/.pytest_cache/
+web/.ruff_cache/
+web/static/shots/*.png
+
+# ---- Android 签名 ----
+web/android/*.keystore
+web/android/build/
+
+# ---- 工具与本地配置 ----
+tools/node_modules/
+tools/__pycache__/
+tools/deploy.env
+.env
+*.local
+.DS_Store
+
+!web/data/.gitkeep

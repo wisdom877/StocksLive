@@ -1,0 +1,10 @@
+[Unit]
+Description=stock-site 截止提醒（每分钟扫一次 work_tasks）
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/www/wwwroot/stock-site
+Environment=TZ=Asia/Shanghai
+ExecStart=/www/wwwroot/stock-site/venv/bin/python notify.py --tick
