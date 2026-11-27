@@ -40,6 +40,7 @@ final class CarPlayCoordinator: NSObject {
     private var resolvingSSID = false
     private var displayedVideo = false
     private var railAllowed = false
+    private var covered = false
     private var flip = false
     private var orientationObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
@@ -78,9 +79,22 @@ final class CarPlayCoordinator: NSObject {
     func handle(_ body: [String: Any]) {
         switch body["cmd"] as? String {
         case "start":
+            // 网页设置页把分辨率 / 帧率 / 编码 / 音频带在这里；先落盘，再启动。
+            saveReceiverConfig(body)
             let ssid = (body["ssid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let password = body["password"] as? String
             start(ssid: ssid, password: password)
+        case "config":
+            saveReceiverConfig(body)
+        case "restart":
+            // 画面参数只能在会话建立前生效：停掉当前会话，再用新配置重新握手。
+            let ssid = lastSSID
+            var password: String? = nil
+            if let ssid, let saved = try? WiFiCredentials.password(for: ssid) { password = saved }
+            stop(reason: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.start(ssid: ssid, password: password)
+            }
         case "stop":
             stop(reason: nil)
         case "forget":
@@ -96,13 +110,46 @@ final class CarPlayCoordinator: NSObject {
         case "chrome":
             // 网页把左上角返回键换成叉之后，由网页接管关闭；原生右上角的叉收起。
             let showClose = (body["close"] as? Int ?? 1) != 0
-            closeButton.isHidden = !showClose || !displayedVideo
+            closeButton.isHidden = !showClose || !displayedVideo || covered
+        case "overlay":
+            // 网页要压一层整屏设置：先把原生视频层与心率栏收走，关掉设置再放回来。
+            covered = (body["covered"] as? Int ?? 0) != 0
+            stage.isHidden = covered || !displayedVideo
+            closeButton.isHidden = covered || !displayedVideo
+            syncHeartRailVisibility(animated: covered)
+            relayout()
         default:
             break
         }
     }
 
     // MARK: - 启动 / 停止
+
+    /// CarPlay 显示参数跟网页设置页保持一致；这里不信任任意值，落盘前先做范围校验。
+    private func saveReceiverConfig(_ body: [String: Any]) {
+        let defaults = UserDefaults.standard
+        if let w = body["width"] as? Int, (320...3840).contains(w), w % 2 == 0,
+           let h = body["height"] as? Int, (320...3840).contains(h), h % 2 == 0 {
+            defaults.set(w, forKey: "cpWidth")
+            defaults.set(h, forKey: "cpHeight")
+        }
+        if let fps = body["maxFPS"] as? Int, (30...60).contains(fps), fps % 5 == 0 {
+            defaults.set(fps, forKey: "cpFPS")
+        }
+        if let codec = body["codec"] as? String, ["h264", "h265"].contains(codec) {
+            defaults.set(codec, forKey: "cpCodec")
+        }
+        if let audio = body["audio"] as? Int {
+            defaults.set(audio != 0, forKey: "cpAudio")
+        } else if let audio = body["audio"] as? Bool {
+            defaults.set(audio, forKey: "cpAudio")
+        }
+    }
+
+    private func savedInt(_ key: String, _ fallback: Int) -> Int {
+        let v = UserDefaults.standard.integer(forKey: key)
+        return v > 0 ? v : fallback
+    }
 
     private func start(ssid: String?, password: String?) {
         guard !active, !resolvingSSID else { return }
@@ -144,9 +191,20 @@ final class CarPlayCoordinator: NSObject {
             return
         }
         let deviceID = ReceiverConfiguration.persistentDeviceID()
+        // 分辨率 / 帧率 / 编码 / 音频来自设置页；没有设置过就保持原来的 1280×720@30 H.264。
+        var width = savedInt("cpWidth", 1280)
+        var height = savedInt("cpHeight", 720)
+        if !(320...3840).contains(width) || width % 2 != 0 { width = 1280 }
+        if !(320...3840).contains(height) || height % 2 != 0 { height = 720 }
+        let fps = savedInt("cpFPS", 30)
+        let codec = UserDefaults.standard.string(forKey: "cpCodec") == "h265" ? VideoCodec.h265 : .h264
+        let audio = UserDefaults.standard.object(forKey: "cpAudio") == nil
+            ? true : UserDefaults.standard.bool(forKey: "cpAudio")
         var config = ReceiverConfiguration(address: address, ssid: ssid, password: password,
-                                           width: 1280, height: 720, maxFPS: 30, videoCodec: .h264,
-                                           audioEnabled: true, widthPhysicalMM: 200,
+                                           width: width, height: height,
+                                           maxFPS: (30...60).contains(fps) ? fps : 30,
+                                           videoCodec: codec,
+                                           audioEnabled: audio, widthPhysicalMM: 200,
                                            oemIconPNG: nil, oemIconLabel: "黄杨工作台", deviceID: deviceID)
         do { try config.validate() } catch {
             push(state: "failed", message: error.localizedDescription)
@@ -159,6 +217,7 @@ final class CarPlayCoordinator: NSObject {
 
         active = true
         displayedVideo = false
+        covered = false
         stage.surface.reset()
         stage.isHidden = true
         heartRail.isHidden = true
@@ -183,8 +242,8 @@ final class CarPlayCoordinator: NSObject {
                 try self.stage.surface.enqueue(accessUnit: data, codec: codec)
                 if !self.displayedVideo {
                     self.displayedVideo = true
-                    self.stage.isHidden = false
-                    self.closeButton.isHidden = false
+                    self.stage.isHidden = self.covered
+                    self.closeButton.isHidden = self.covered
                     self.heartRail.refresh()
                     self.relayout()
                     self.push(state: "video", message: "CarPlay 画面已就绪")
@@ -218,6 +277,7 @@ final class CarPlayCoordinator: NSObject {
         resolvingSSID = false
         active = false
         displayedVideo = false
+        covered = false
         probe.stop()
         receiver.stop()
         stage.surface.reset()
@@ -306,7 +366,7 @@ final class CarPlayCoordinator: NSObject {
 
     /// 没真实心率、还没出画面、或不在横向留白里时，整颗胶囊收起，不显示空壳。
     private func syncHeartRailVisibility(animated: Bool = false) {
-        let visible = active && displayedVideo && railAllowed && HeartRateCenter.shared.current() != nil
+        let visible = active && displayedVideo && railAllowed && !covered && HeartRateCenter.shared.current() != nil
         if visible {
             heartRail.isHidden = false
             if animated {
