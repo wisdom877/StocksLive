@@ -78,7 +78,7 @@ final class CarPlayCoordinator: NSObject {
             if let ssid = lastSSID { try? WiFiCredentials.forget(ssid) }
             UserDefaults.standard.removeObject(forKey: Self.ssidKey)
             lastSSID = nil
-            push(state: "idle", message: "已清除 Wi-Fi 凭据")
+            push(state: "credentials", message: "已清除旧凭据，输入要连接的 Wi-Fi", extra: ["ssid": ""])
         case "geometry":
             flip = (body["flip"] as? Int ?? (body["flip"] as? Bool == true ? 1 : 0)) != 0
             relayout()
@@ -106,71 +106,15 @@ final class CarPlayCoordinator: NSObject {
             guard let self, self.resolvingSSID else { return }
             self.resolvingSSID = false
             guard !self.active else { return }
-            if let name, !name.isEmpty {
-                self.promptPassword(ssid: name)
-            } else {
-                self.promptCredentials(prefill: self.lastSSID)
-            }
+            self.requestCredentials(ssid: name)
         }
     }
 
-    private func promptPassword(ssid: String) {
-        guard let host, host.presentedViewController == nil else {
-            push(state: "failed", message: "请先关闭其它弹窗，再启动 CarPlay")
-            return
-        }
-        let alert = UIAlertController(title: "连接 CarPlay",
-                                      message: "已识别当前 Wi-Fi：\(ssid)。输入密码后开始；开放网络留空。",
-                                      preferredStyle: .alert)
-        alert.addTextField { field in
-            field.placeholder = "Wi-Fi 密码（开放网络留空）"
-            field.isSecureTextEntry = true
-            field.autocorrectionType = .no
-            field.autocapitalizationType = .none
-        }
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
-            self?.push(state: "idle", message: "未启动")
-        })
-        alert.addAction(UIAlertAction(title: "开始", style: .default) { [weak self, weak alert] _ in
-            guard let self else { return }
-            let password = alert?.textFields?.first?.text ?? ""
-            self.begin(ssid: ssid, password: password)
-        })
-        host.present(alert, animated: true)
-    }
-
-    private func promptCredentials(prefill: String?) {
-        guard let host, host.presentedViewController == nil else {
-            push(state: "failed", message: "请先关闭其它弹窗，再启动 CarPlay")
-            return
-        }
-        let alert = UIAlertController(title: "连接 CarPlay", message: "未读到当前 Wi-Fi（可能未授权定位）。填写 iPhone 所连 Wi-Fi 的名称和密码。密码只保存在本机钥匙串。", preferredStyle: .alert)
-        alert.addTextField { field in
-            field.placeholder = "Wi-Fi 名称"
-            field.text = prefill
-            field.autocorrectionType = .no
-            field.autocapitalizationType = .none
-        }
-        alert.addTextField { field in
-            field.placeholder = "密码（开放网络留空）"
-            field.isSecureTextEntry = true
-            field.autocorrectionType = .no
-            field.autocapitalizationType = .none
-        }
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
-            self?.push(state: "idle", message: "未启动")
-        })
-        alert.addAction(UIAlertAction(title: "开始", style: .default) { [weak self, weak alert] _ in
-            guard let self else { return }
-            let ssid = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let password = alert?.textFields?.last?.text ?? ""
-            guard !ssid.isEmpty else {
-                self.push(state: "failed", message: "Wi-Fi 名称不能为空")
-                return
-            }
-            self.begin(ssid: ssid, password: password)
-        })
-        host.present(alert, animated: true)
+    // 凭据交给网页里的弹层输入，不再用系统 Alert；网页负责键盘与主题。
+    private func requestCredentials(ssid: String?) {
+        let name = (ssid ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = name.isEmpty ? "未读到当前 Wi-Fi，请手动填写" : "已识别当前 Wi-Fi，输入密码即可"
+        push(state: "credentials", message: note, extra: ["ssid": name])
     }
 
     private func begin(ssid: String, password: String) {
@@ -310,9 +254,11 @@ final class CarPlayCoordinator: NSObject {
         // 日志不逐条推到网页，避免连接过程里刷屏；只看最后一条错误。
     }
 
-    private func push(state: String, message: String) {
+    private func push(state: String, message: String, extra: [String: Any] = [:]) {
         guard let webView else { return }
-        let payload: [String: Any] = ["state": state, "msg": message]
+        var payload = extra
+        payload["state"] = state
+        payload["msg"] = message
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
         let js = "window.wkCarPlayState && window.wkCarPlayState(\(json));"
