@@ -29,6 +29,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     private var autoRetry = 0
     private var retryTask: DispatchWorkItem?
     private var pendingAlarmID: String?
+    private var alarmRetry: DispatchWorkItem?
+    private var alarmAttempt = 0
     private var failedURL = URL(string: "https://api.wisdomhqq.top/stocks/")!
 
     /// 站点里的 dndLockSync() 只认 window.Capacitor.Plugins.DndLive；
@@ -803,15 +805,49 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     /// 系统通知被点开：把提醒 id 交回网页（页面可能还没加载完，先存着，didFinish 再补发）
     func deliverAlarm(_ rawID: String) {
         pendingAlarmID = rawID
+        alarmAttempt = 0
         pushPendingAlarm()
     }
 
+    /// 只认网页明确回了一个 true 才算送达。
+    /// 原来 evaluateJavaScript 返回 nil / undefined 也算成功，冷启动时网页还没注册
+    /// window.wkNativeAlarm，id 就被清掉了，用户只能点进工作页靠轮询补弹。
     private func pushPendingAlarm() {
-        guard let id = pendingAlarmID, webView != nil else { return }
-        let js = "window.wkNativeAlarm && window.wkNativeAlarm(\"\(id)\")"
-        webView.evaluateJavaScript(js) { [weak self] _, err in
-            if err == nil { self?.pendingAlarmID = nil }
+        guard let id = pendingAlarmID, let webView = self.webView else { return }
+        alarmRetry?.cancel()
+        let literal = Self.jsStringLiteral(id)
+        let js = """
+        (function () {
+          try {
+            if (typeof window.wkNativeAlarm !== "function") return false;
+            window.wkNativeAlarm(\(literal));
+            return true;
+          } catch (e) { return false; }
+        })()
+        """
+        webView.evaluateJavaScript(js) { [weak self] result, error in
+            DispatchQueue.main.async {
+                guard let self = self, self.pendingAlarmID == id else { return }
+                if error == nil, let ok = result as? Bool, ok {
+                    self.pendingAlarmID = nil
+                    self.alarmAttempt = 0
+                    return
+                }
+                // 页面还在加载 / 刚被杀掉重载：几百毫秒后再试，直到脚本注册了桥接函数
+                guard self.alarmAttempt < 40 else { return }
+                self.alarmAttempt += 1
+                let delay = min(1.0, 0.25 + Double(self.alarmAttempt) * 0.15)
+                let task = DispatchWorkItem { [weak self] in self?.pushPendingAlarm() }
+                self.alarmRetry = task
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: task)
+            }
         }
+    }
+
+    private static func jsStringLiteral(_ value: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed),
+              let text = String(data: data, encoding: .utf8) else { return "\"\"" }
+        return text
     }
 
     /// 把 JS 传来的 payload 转成 Activity 的 ContentState；endAt 为 0 / 缺失表示不是倒计时
