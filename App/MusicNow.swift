@@ -53,7 +53,12 @@ final class MusicNow: NSObject {
         case "pause":   active.pause()
         case "toggle":
             if active.playbackState == .playing { active.pause() }
-            else { activatePlaybackSession(); active.play() }
+            else {
+                // applicationQueuePlayer 没有队列时 play() 会直接回到 paused。
+                // 空队列先退回 system，避免连点播放/暂停把播放器状态打乱。
+                if useQueue, queue.nowPlayingItem == nil { useQueue = false }
+                activatePlaybackSession(); active.play()
+            }
         case "next":    active.skipToNextItem()
         case "prev":    active.skipToPreviousItem()
         case "seek":
@@ -191,23 +196,23 @@ final class MusicNow: NSObject {
                                                   .airPlay, .headphones, .usbAudio, .lineOut]
         if outputs.contains(where: { external.contains($0) }) {
             try? s.setCategory(.playback, mode: .default,
-                               options: [.allowBluetoothA2DP, .allowAirPlay])
+                               options: [.allowBluetoothA2DP, .allowAirPlay, .mixWithOthers])
             try? s.setActive(true)
             try? s.overrideOutputAudioPort(.none)
             return
         }
         let onCarAudio = outputs.contains(.carAudio)
         guard onCarAudio else {
-            try? s.setCategory(.playback, mode: .default, options: [])
+            try? s.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try? s.setActive(true)
             return
         }
         do {
-            try s.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+            try s.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .mixWithOthers])
             try s.setActive(true)
             try s.overrideOutputAudioPort(.speaker)
         } catch {
-            try? s.setCategory(.playback, mode: .default, options: [])
+            try? s.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try? s.setActive(true)
         }
     }
@@ -289,9 +294,11 @@ final class MusicNow: NSObject {
 
     private func tick() {
         guard web != nil else { return }
-        // 谁真的在放就镜像谁：用户在「音乐」App 里按了播放，会自动切回系统通道
+        // 谁真的在放就镜像谁：用户在「音乐」App 里按了播放，会自动切回系统通道。
+        // 两边都 paused 时不能保留上一次的 useQueue，否则会一直对着空队列发 play()。
         if system.playbackState == .playing { useQueue = false }
         else if queue.playbackState == .playing { useQueue = true }
+        else if useQueue, queue.nowPlayingItem == nil { useQueue = false }
 
         let p = active
         var d: [String: Any] = ["auth": authText(), "src": useQueue ? "queue" : "system"]

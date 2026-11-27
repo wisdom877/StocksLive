@@ -81,6 +81,9 @@ final class CarPlayAudio {
     private static var playingStreams = 0
     #if os(iOS)
     private static var hasSpeakerOverride = false
+    private var sessionHeld = false
+    private var lastSessionConfigAt = 0.0
+    private var audioObservers: [NSObjectProtocol] = []
 
     /// 手机已连的蓝牙耳机 / 车机蓝牙 / 音响 / AirPlay / 有线耳机优先，存在就不抢回扬声器。
     private static func hasExternalAudio(_ session: AVAudioSession) -> Bool {
@@ -103,6 +106,9 @@ final class CarPlayAudio {
             microphone = NativeMicrophone(secret: secret, connectionID: connectionID, address: peerAddress, port: microphonePort, format: format)
         }
         data.onPacket = { [weak self] in self?.receive($0) }
+        #if os(iOS)
+        observeAudioSession()
+        #endif
     }
     private func receive(_ wire: Data) {
         guard active else { return }
@@ -125,59 +131,33 @@ final class CarPlayAudio {
                 guard now >= retryPlaybackAt else { return }
                 retryPlaybackAt = now + 0.5
                 #if os(iOS)
-                let session = AVAudioSession.sharedInstance()
-                let external = Self.hasExternalAudio(session)
-                let needsDuplexCategory = microphone != nil || Self.hasSpeakerOverride
-                var options: AVAudioSession.CategoryOptions = needsDuplexCategory ? [.defaultToSpeaker] : []
-                if external {
-                    // 蓝牙耳机/车机/音响在连着时，允许 A2DP/AirPlay，保持系统选中的外设，不 override。
-                    options.insert(.allowBluetoothA2DP)
-                    options.insert(.allowAirPlay)
-                }
-                if BackgroundKeepAlive.holdsAudioSession { options.insert(.mixWithOthers) }
-                let category: AVAudioSession.Category = needsDuplexCategory ? .playAndRecord : .playback
-                if session.category != category || session.mode != .default || session.categoryOptions != options {
-                    try session.setCategory(category, mode: .default, options: options)
-                }
-                try session.setActive(true)
-                if external {
-                    if Self.hasSpeakerOverride {
-                        try? session.overrideOutputAudioPort(.none)
-                        Self.hasSpeakerOverride = false
-                    }
-                    onLog?(CWL("本机音频跟随已连接蓝牙/耳机外设"))
-                } else if session.currentRoute.outputs.contains(where: { $0.portType == .carAudio }) {
-                    // 只有虚拟 CarAudio、没有任何外接蓝牙时，才回落到物理扬声器。
-                    if session.category != .playAndRecord {
-                        try session.setCategory(.playAndRecord, mode: .default, options: options.union(.defaultToSpeaker))
-                    }
-                    do {
-                        try session.overrideOutputAudioPort(.speaker)
-                        Self.hasSpeakerOverride = true
-                        onLog?(CWL("本机音频避开 CarPlay 路由，改用 iPhone 扬声器"))
-                    } catch {
-                        Self.deactivateSessionIfIdle()
-                        throw error
-                    }
-                }
+                try configureAudioSession(AVAudioSession.sharedInstance())
                 #endif
-                let engine: AVAudioEngine
-                if let existing = self.engine { engine = existing }
-                else {
-                    engine = AVAudioEngine()
+                if self.engine == nil {
+                    let engine = AVAudioEngine()
                     let player = AVAudioPlayerNode()
                     engine.attach(player); engine.connect(player, to: engine.mainMixerNode, format: output)
                     engine.mainMixerNode.outputVolume = 1
                     player.volume = 1
                     self.engine = engine; self.player = player
                 }
-                do { try engine.start() } catch {
+                guard let engine = self.engine else { return }
+                do {
+                    if !engine.isRunning { try engine.start() }
+                } catch {
+                    rebuildEngineOnQueue()
                     #if os(iOS)
                     Self.deactivateSessionIfIdle()
                     #endif
                     throw error
                 }
-                playing = true; Self.playingStreams += 1
+                #if os(iOS)
+                if !sessionHeld {
+                    Self.playingStreams += 1
+                    sessionHeld = true
+                }
+                #endif
+                playing = true
                 if let microphone {
                     microphone.onLog = onLog
                     DispatchQueue.main.async { microphone.start() }
@@ -187,6 +167,12 @@ final class CarPlayAudio {
                 #if os(iOS)
                 onLog?(CWL("音频输出路由：{1}", [String(describing: AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ", "))]))
                 #endif
+            }
+            // If the engine stopped between packets (route change, interruption, or an
+            // unobserved configuration change), never schedule/play into a dead graph.
+            if self.engine?.isRunning != true {
+                rebuildEngineOnQueue()
+                return
             }
             guard let player else { return }
             queuedFrames += frames
@@ -201,6 +187,12 @@ final class CarPlayAudio {
             }
             let prebuffer = format.sampleRate * (format.isAAC ? 180 : 40) / 1000
             if buffering, queuedFrames >= prebuffer {
+                guard self.engine?.isRunning == true else {
+                    // Route changes can leave player.play() on a stopped/uninitialized engine,
+                    // which is an uncatchable AVFAudio exception. Rebuild on the next packet.
+                    rebuildEngineOnQueue()
+                    return
+                }
                 player.play(); buffering = false
             }
             updateFeedback()
@@ -215,6 +207,133 @@ final class CarPlayAudio {
             if rejected <= 3 { onLog?(CWL("音频数据包被拒绝：{1}", [String(describing: error.localizedDescription)])) }
         }
     }
+    #if os(iOS)
+    /// 同一个 iPhone 既是 CarPlay 宿主又是接收端时，接收端绝不能抢走宿主的非混音会话。
+    /// 先按 playback + allowBluetoothA2DP 激活，让系统优先挑已连接的蓝牙/耳机；
+    /// 只有路由仍停在虚拟 carAudio 时，才切到 playAndRecord + defaultToSpeaker 回本机扬声器。
+    private func configureAudioSession(_ session: AVAudioSession) throws {
+        lastSessionConfigAt = ProcessInfo.processInfo.systemUptime
+        if Self.hasSpeakerOverride {
+            try? session.overrideOutputAudioPort(.none)
+            Self.hasSpeakerOverride = false
+        }
+
+        let wantsMicrophone = microphone != nil
+        var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .allowBluetoothA2DP, .allowAirPlay]
+        let initialCategory: AVAudioSession.Category = wantsMicrophone ? .playAndRecord : .playback
+        if session.category != initialCategory || session.mode != .default || session.categoryOptions != options {
+            try session.setCategory(initialCategory, mode: .default, options: options)
+        }
+        try session.setActive(true)
+
+        let external = Self.hasExternalAudio(session)
+        let onCarAudio = session.currentRoute.outputs.contains { $0.portType == .carAudio }
+        if external {
+            onLog?(CWL("本机音频跟随已连接蓝牙/耳机外设"))
+        } else if !wantsMicrophone, onCarAudio {
+            // 纯媒体流：playback 仍被 CarPlay 的虚拟 carAudio 占着，切 duplex 回物理扬声器。
+            options = [.mixWithOthers, .defaultToSpeaker]
+            try session.setCategory(.playAndRecord, mode: .default, options: options)
+            try session.setActive(true)
+            do {
+                try session.overrideOutputAudioPort(.speaker)
+                Self.hasSpeakerOverride = true
+                onLog?(CWL("本机音频避开 CarPlay 路由，改用 iPhone 扬声器"))
+            } catch {
+                Self.deactivateSessionIfIdle()
+                throw error
+            }
+        } else if wantsMicrophone, !external, onCarAudio {
+            // 通话/麦克风流没有外接设备时也要避免走 CarAudio。
+            options.insert(.defaultToSpeaker)
+            try session.setCategory(.playAndRecord, mode: .default, options: options)
+            try? session.setActive(true)
+        }
+        onLog?(CWL("音频输出路由：{1}", [String(describing: session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ", "))]))
+    }
+
+    private func observeAudioSession() {
+        let center = NotificationCenter.default
+        audioObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: nil) { [weak self] note in
+            guard let self else { return }
+            self.queue.async { self.handleRouteChange(note) }
+        })
+        audioObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { [weak self] note in
+            guard let self else { return }
+            self.queue.async { self.handleInterruption(note) }
+        })
+        audioObservers.append(center.addObserver(forName: Notification.Name("AVAudioEngineConfigurationChangeNotification"), object: nil, queue: nil) { [weak self] note in
+            guard let self else { return }
+            self.queue.async {
+                guard let changed = note.object as? AVAudioEngine, changed === self.engine else { return }
+                self.handleEngineConfigurationChange()
+            }
+        })
+    }
+
+    private func handleRouteChange(_ note: Notification) {
+        guard active else { return }
+        let reason: AVAudioSession.RouteChangeReason? = {
+            guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt else { return nil }
+            return AVAudioSession.RouteChangeReason(rawValue: raw)
+        }()
+        let now = ProcessInfo.processInfo.systemUptime
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ", ")
+        onLog?(CWL("音频路由变化：{1}（{2}）", [String(describing: reason?.rawValue ?? 0), String(describing: outputs)]))
+        // 我们自己的 category / speaker override 也会发 routeChange；给配置留一个静默窗口，
+        // 避免刚启动的引擎被自己的通知立刻拆掉。
+        guard now - lastSessionConfigAt >= 0.35 else { return }
+        if playing || engine != nil {
+            rebuildEngineOnQueue()
+            onLog?(CWL("音频引擎因路由变化重建，等待下一包音频"))
+        }
+    }
+
+    private func handleInterruption(_ note: Notification) {
+        guard active,
+              let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            player?.pause()
+            buffering = true
+            playing = false
+            onLog?(CWL("音频会话被中断，暂停接收端播放"))
+        case .ended:
+            playing = false
+            buffering = true
+            retryPlaybackAt = 0
+            onLog?(CWL("音频会话中断结束，等待下一包恢复"))
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleEngineConfigurationChange() {
+        guard active else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastSessionConfigAt >= 0.35 else { return }
+        rebuildEngineOnQueue()
+        onLog?(CWL("音频引擎配置变化，已释放旧图，等待下一包重建"))
+    }
+
+    /// AVAudioEngine 在采样率/声道数变化时会自行 stop + uninitialize。
+    /// 旧 player 仍被抱着，直接 play() 会抛 "player started when engine not running"。
+    private func rebuildEngineOnQueue() {
+        player?.stop()
+        engine?.stop()
+        engine = nil
+        player = nil
+        playing = false
+        buffering = true
+        queuedFrames = 0
+        firstTimestamp = nil
+        retryPlaybackAt = 0
+        feedbackLock.lock()
+        renderedSampleTime = nil
+        feedbackLock.unlock()
+    }
+    #endif
     private func browserTimestamp(_ rtp: UInt32, arrival: UInt64) -> UInt64 {
         if let anchor = browserClock {
             let samples = Int64(Int32(bitPattern: rtp &- anchor.rtp))
@@ -258,36 +377,42 @@ final class CarPlayAudio {
     }
     static func endMediaSession() {
         #if os(iOS)
-        renderQueue.async { deactivateSessionIfIdle(releaseSpeakerOverride: true) }
+        renderQueue.async { deactivateSessionIfIdle() }
         #endif
     }
     private func stopOnQueue() {
         guard active else { return }; active = false
         if let microphone { DispatchQueue.main.async { microphone.stop() } }; microphone = nil
-        data.stop(); control.stop(); player?.stop(); engine?.stop(); queuedFrames = 0
-        if playing {
-            playing = false; Self.playingStreams -= 1
-            #if os(iOS)
-            Self.deactivateSessionIfIdle()
-            #endif
+        data.stop(); control.stop(); player?.stop(); engine?.stop()
+        engine = nil; player = nil
+        queuedFrames = 0; firstTimestamp = nil
+        playing = false
+        #if os(iOS)
+        if sessionHeld {
+            sessionHeld = false
+            Self.playingStreams = max(0, Self.playingStreams - 1)
         }
+        Self.deactivateSessionIfIdle()
+        #endif
+    }
+    deinit {
+        #if os(iOS)
+        audioObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        #endif
     }
     #if os(iOS)
-    /// Releases the shared session after the last stream, unless the background keep-alive still
-    /// plays in it: deactivating would stop that player too and iOS would suspend the app.
-    private static func deactivateSessionIfIdle(releaseSpeakerOverride: Bool = false) {
+    /// 最后一个接收流停止后彻底归还会话；不能留下 playAndRecord + speaker 的
+    /// 非混音配置，否则宿主「音乐」下一次播放仍会被中断。
+    private static func deactivateSessionIfIdle() {
         guard playingStreams == 0 else { return }
         let session = AVAudioSession.sharedInstance()
         let keepAlive = BackgroundKeepAlive.holdsAudioSession
         if hasSpeakerOverride {
-            // A CarPlay audio format change tears down the old RTP stream. Keep the
-            // output route through that replacement so iOS does not renegotiate again.
-            guard releaseSpeakerOverride else { return }
             hasSpeakerOverride = false
             try? session.overrideOutputAudioPort(.none)
-            try? session.setCategory(.playback, mode: .default, options: keepAlive ? [.mixWithOthers] : [])
         }
         guard !keepAlive else { return }
+        try? session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
     }
     #endif
