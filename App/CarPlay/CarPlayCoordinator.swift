@@ -255,7 +255,10 @@ final class CarPlayCoordinator: NSObject {
 
         let margin: CGFloat = 8
         let inset = host.view.safeAreaInsets
-        closeButton.frame = CGRect(x: bounds.maxX - inset.right - 38 - margin, y: inset.top + margin, width: 38, height: 38)
+        // 叉号放到 16:9 画面右侧的留白里，和左侧返回键一样在画面外，不压 CarPlay 内容
+        let rightLimit = bounds.maxX - inset.right - 38 - margin
+        let outsideStage = stage.frame.maxX + margin
+        closeButton.frame = CGRect(x: min(outsideStage, rightLimit), y: inset.top + margin, width: 38, height: 38)
     }
 
     // MARK: - 状态回传
