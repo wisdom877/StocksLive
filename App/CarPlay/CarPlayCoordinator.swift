@@ -79,6 +79,8 @@ final class CarPlayCoordinator: NSObject {
             UserDefaults.standard.removeObject(forKey: Self.ssidKey)
             lastSSID = nil
             push(state: "credentials", message: "已清除旧凭据，输入要连接的 Wi-Fi", extra: ["ssid": ""])
+        case "wifiSettings":
+            openWiFiSettings()
         case "geometry":
             flip = (body["flip"] as? Int ?? (body["flip"] as? Bool == true ? 1 : 0)) != 0
             relayout()
@@ -114,7 +116,8 @@ final class CarPlayCoordinator: NSObject {
     private func requestCredentials(ssid: String?) {
         let name = (ssid ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let note = name.isEmpty ? "未读到当前 Wi-Fi，请手动填写" : "已识别当前 Wi-Fi，输入密码即可"
-        push(state: "credentials", message: note, extra: ["ssid": name])
+        let hasWiFi = ReceiverConfiguration.wifiIPv4Address() != nil
+        push(state: "credentials", message: note, extra: ["ssid": name, "wifi": hasWiFi])
     }
 
     private func begin(ssid: String, password: String) {
@@ -205,6 +208,14 @@ final class CarPlayCoordinator: NSObject {
         closeButton.removeFromSuperview()
         onIdleAudio?()
         push(state: state, message: reason ?? "CarPlay 已停止")
+    }
+
+    private func openWiFiSettings() {
+        guard let url = URL(string: "App-Prefs:root=WIFI") else { return }
+        UIApplication.shared.open(url, options: [:]) { ok in
+            guard !ok, let fallback = URL(string: UIApplication.openSettingsURLString) else { return }
+            UIApplication.shared.open(fallback, options: [:], completionHandler: nil)
+        }
     }
 
     // MARK: - 布局
