@@ -57,7 +57,7 @@ struct LockCard: View {
     }
 }
 
-/// 手表（small 家族）：只留环、标题、大倒计时、一条极细进度线，其余全部砍掉
+/// 手表（small 家族）：标题 / 大倒计时 / 心率一行 / 极细进度线，左侧不再占图标位
 struct WatchCard: View {
     let context: ActivityViewContext<DndActivityAttributes>
 
@@ -77,10 +77,10 @@ struct WatchCard: View {
                 BigText(context: context)
                     .font(.system(size: 19, weight: .semibold, design: .rounded))
                     .lineLimit(1).minimumScaleFactor(0.55)
+                HrLine(context: context, compact: true)
                 BarView(context: context, showsEnds: false, height: 2)
             }
             Spacer(minLength: 0)
-            HrCurve(samples: context.state.hr ?? [], bpm: context.state.bpm, height: 22, width: 62)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -124,10 +124,8 @@ struct PhoneCard: View {
                             .lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }
+                HrLine(context: context, compact: false)
                 BarView(context: context)
-            }
-            if context.state.progress >= 0 || !(context.state.hr ?? []).isEmpty {
-                HrCurve(samples: context.state.hr ?? [], bpm: context.state.bpm, height: 26, width: 66)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -142,6 +140,42 @@ private func toneColor(_ tone: Int) -> Color {
     case -1: return Color(red: 0.2, green: 0.82, blue: 0.45)
     case 2: return Color(red: 1.0, green: 0.35, blue: 0.35)
     default: return .white
+    }
+}
+
+/// 心率独立一行：左曲线、中当前值、右区间与统计；没有采样整行消失
+struct HrLine: View {
+    let context: ActivityViewContext<DndActivityAttributes>
+    var compact: Bool = false
+
+    private var hasData: Bool { (context.state.hr ?? []).count >= 3 }
+
+    var body: some View {
+        if hasData {
+            HStack(spacing: compact ? 6 : 10) {
+                HrCurve(samples: context.state.hr ?? [], bpm: nil,
+                        height: compact ? 14 : 18, width: compact ? 46 : 64, showValue: false)
+                if let b = context.state.bpm, b > 0 {
+                    Text("\(b)").font(.system(size: compact ? 12 : 14, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                    Text("BPM").font(.system(size: 8, weight: .regular, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                Text(meta).font(.system(size: compact ? 8.5 : 10, weight: .regular, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            }
+        }
+    }
+
+    private var meta: String {
+        var parts: [String] = []
+        if let z = context.state.hrZone, !z.isEmpty { parts.append(z) }
+        if let a = context.state.hrAvg, let p = context.state.hrPeak, !compact { parts.append("均 \(a) · 峰 \(p)") }
+        if let m = context.state.hrMins, m > 0, !compact { parts.append("近 \(m) 分") }
+        return parts.joined(separator: " · ")
     }
 }
 

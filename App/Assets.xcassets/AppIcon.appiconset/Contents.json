@@ -1,17 +1,92 @@
 {
-  "images" : [
+  "images": [
     {
-      "filename" : "icon-1024.png",
-      "idiom" : "universal",
-      "platform" : "ios",
-      "size" : "1024x1024"
+      "filename": "icon-1024.png",
+      "idiom": "universal",
+      "platform": "ios",
+      "size": "1024x1024"
     },
     {
-      "filename" : "icon-watch-1024.png",
-      "idiom" : "universal",
-      "platform" : "watchos",
-      "size" : "1024x1024"
+      "filename": "icon-watch-1024.png",
+      "idiom": "universal",
+      "platform": "watchos",
+      "size": "1024x1024"
+    },
+    {
+      "filename": "icon-w24-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "24x24"
+    },
+    {
+      "filename": "icon-w27_5-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "27.5x27.5"
+    },
+    {
+      "filename": "icon-w29-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "29x29"
+    },
+    {
+      "filename": "icon-w29-3x.png",
+      "idiom": "watch",
+      "scale": "3x",
+      "size": "29x29"
+    },
+    {
+      "filename": "icon-w40-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "40x40"
+    },
+    {
+      "filename": "icon-w44-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "44x44"
+    },
+    {
+      "filename": "icon-w50-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "50x50"
+    },
+    {
+      "filename": "icon-w86-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "86x86"
+    },
+    {
+      "filename": "icon-w98-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "98x98"
+    },
+    {
+      "filename": "icon-w108-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "108x108"
+    },
+    {
+      "filename": "icon-w117-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "117x117"
+    },
+    {
+      "filename": "icon-w129-2x.png",
+      "idiom": "watch",
+      "scale": "2x",
+      "size": "129x129"
     }
   ],
-  "info" : { "author" : "xcode", "version" : 1 }
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
 }

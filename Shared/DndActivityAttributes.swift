@@ -27,12 +27,18 @@ struct DndActivityAttributes: ActivityAttributes {
         var bpm: Int?
         /// 最近一段采样（约 24 点），卡片里画成 sparkline
         var hr: [Double]?
+        /// 心率分析：窗口均值 / 峰值 / 当前区间 / 窗口时长（分钟），无样本时全为 nil
+        var hrAvg: Int?
+        var hrPeak: Int?
+        var hrZone: String?
+        var hrMins: Int?
 
         init(endAt: Date?, big: String = "", small: String = "", tone: Int = 0,
              progress: Double = -1, ringText: String = "", badge: String = "",
              leftText: String = "", rightText: String = "",
              line1: String = "", line2: String = "",
-             bpm: Int? = nil, hr: [Double]? = nil) {
+             bpm: Int? = nil, hr: [Double]? = nil,
+             hrAvg: Int? = nil, hrPeak: Int? = nil, hrZone: String? = nil, hrMins: Int? = nil) {
             self.endAt = endAt
             self.big = big
             self.small = small
@@ -46,6 +52,10 @@ struct DndActivityAttributes: ActivityAttributes {
             self.line2 = line2
             self.bpm = bpm
             self.hr = hr
+            self.hrAvg = hrAvg
+            self.hrPeak = hrPeak
+            self.hrZone = hrZone
+            self.hrMins = hrMins
         }
     }
     var title: String

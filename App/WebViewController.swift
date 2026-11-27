@@ -723,7 +723,11 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             line1: body["line1"] as? String ?? "",
             line2: body["line2"] as? String ?? "",
             bpm: (body["bpm"] as? NSNumber)?.intValue,
-            hr: (body["hr"] as? [NSNumber])?.map { $0.doubleValue }
+            hr: (body["hr"] as? [NSNumber])?.map { $0.doubleValue },
+            hrAvg: (body["hrAvg"] as? NSNumber)?.intValue,
+            hrPeak: (body["hrPeak"] as? NSNumber)?.intValue,
+            hrZone: body["hrZone"] as? String,
+            hrMins: (body["hrMins"] as? NSNumber)?.intValue
         )
     }
 }
