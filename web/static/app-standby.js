@@ -198,19 +198,25 @@ function sbCarPlaySheet(show, ssid, note, wifi) {
   const si = $("#sb-cp-ssid"), pw = $("#sb-cp-pwd");
   const form = $("#sb-cp-form"), nowifi = $("#sb-cp-nowifi");
   const h1 = $("#sb-cp-h1"), p = $("#sb-cp-p");
+  const peer = $("#sb-cp-peer");
+  if (peer) peer.classList.toggle("hidden", sbCpHd());
   if (form) form.classList.toggle("hidden", !has);
   if (nowifi) nowifi.classList.toggle("hidden", has);
   const body = sheet.querySelector(".sb-cp-body");
   if (body) body.classList.toggle("sb-cp-empty", !has);
-  if (h1) h1.textContent = has ? "连接 CarPlay" : "没有 Wi-Fi";
-  if (p) p.textContent = has
-    ? "CarPlay 走本机局域网，需要先连一个 Wi-Fi。Wi-Fi 可以没有互联网，手机数据照样走蜂窝。"
-    : "CarPlay 走本机局域网，蜂窝数据不能替代。";
+  if (h1) h1.textContent = sbCpHd() ? "接收 iPhone 的 CarPlay" : "连接 iPad 的 CarPlay";
+  if (p) p.textContent = sbCpHd()
+    ? "iPhone 和 iPad 在同一个 Wi-Fi 下；iPhone 负责真实 CarPlay 会话，这台 iPad 只负责显示、声音和触控。"
+    : "iPhone 和 iPad 在同一个 Wi-Fi 下；输入 iPad 屏幕底部显示的地址即可。Wi-Fi 可以没有互联网。";
   if (si) si.value = ssid || "";
   if (pw) pw.value = "";
+  const host = $("#sb-cp-host"), port = $("#sb-cp-port");
+  const saved = sbCpPeer();
+  if (host) host.value = saved.host;
+  if (port) port.value = String(saved.port);
   if (!has) return;
   setTimeout(() => {
-    try { (ssid ? pw : si)?.focus(); } catch (e) {}
+    try { (ssid ? pw : (host && !host.value ? host : si))?.focus(); } catch (e) {}
   }, 360);
 }
 
@@ -225,9 +231,36 @@ function sbCarPlaySubmit() {
     }
     return;
   }
+  let host = "", port = 7000;
+  const local = !sbCpHd() && sbCpLocalOn();
+  if (!sbCpHd() && !local) {
+    const hi = $("#sb-cp-host"), pi = $("#sb-cp-port");
+    host = ((hi && hi.value) || "").trim();
+    port = Number((pi && pi.value) || 7000);
+    if (!host) {
+      if (hi) {
+        hi.classList.add("bad");
+        setTimeout(() => hi.classList.remove("bad"), 1200);
+        try { hi.focus(); } catch (e) {}
+      }
+      return;
+    }
+    if (!(port >= 1 && port <= 65535)) port = 7000;
+    sbCpPeerSave(host, port);
+  }
   sbCarPlaySheet(false);
-  sbCarPlayMsg(Object.assign({ cmd: "start", ssid: ssid, password: (pw && pw.value) || "" }, sbCpConfig()));
+  if (sbCpHd()) {
+    sbCarPlayMsg(Object.assign({ cmd: "startReceiver" }, sbCpConfig()));
+  } else if (local) {
+    sbCarPlayMsg(Object.assign({ cmd: "start" },
+      sbCpConfig(), { ssid: ssid, password: (pw && pw.value) || "" }));
+  } else {
+    sbCarPlayMsg(Object.assign({ cmd: "startRemote", target: host, port: port, targetName: "iPad" },
+      sbCpConfig(), { ssid: ssid, password: (pw && pw.value) || "" }));
+  }
+  sbCpWantSet(true);
   sbCarPlaySet("starting", "");
+  sbCarPlayHintPaint();
 }
 
 function sbCpWant() {
@@ -241,6 +274,7 @@ function sbCpWantSet(on) {
 function sbCarPlayClose() {
   const s = sbState();
   s.cpClosing = true;
+  sbCpRetryClear();
   sbCpWantSet(false);
   sbSetClose(true);
   try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
@@ -300,26 +334,53 @@ function sbCpResume() {
   if (!s.on || document.hidden || !sbCpWant() || s.page !== 6 || !sbCpAutoOn()) return;
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
   const st = (page && page.dataset.cp) || "idle";
-  if (st === "video" || st === "starting" || st === "auth" || st === "ready") return;
+  // waiting / listening 也是活着的会话：最多是等对端，不能再发一条 start 把原会话顶掉。
+  if (st === "video" || st === "starting" || st === "auth" || st === "ready" ||
+      st === "waiting" || st === "listening") return;
   if (Date.now() - sbCpResumeAt < 2600) return;
   sbCpResumeAt = Date.now();
   sbCarPlayStart();
 }
 
+/* 断网 / 对端先停 / 系统杀会话之后的重连：不要求人再滑回本页长按。
+   退避从 4 秒开始，最长 30 秒一次；用户主动停止或关掉自动续连就停。 */
+var sbCpRetryTimer = 0;
+function sbCpRetryClear() {
+  clearTimeout(sbCpRetryTimer); sbCpRetryTimer = 0;
+  sbState().cpRetryN = 0;
+}
+function sbCpRetryArm() {
+  const s = sbState();
+  if (sbCpRetryTimer) return;
+  if (!s.on || document.hidden || !sbCpWant() || !sbCpAutoOn() || s.page !== 6 || s.cpClosing) return;
+  const n = (Number(s.cpRetryN) || 0) + 1;
+  s.cpRetryN = n;
+  const delay = Math.min(30, 2 + n * 2) * 1000;
+  sbCpRetryTimer = setTimeout(() => {
+    sbCpRetryTimer = 0;
+    const cur = sbState();
+    if (!cur.on || document.hidden || !sbCpWant() || !sbCpAutoOn() || cur.page !== 6 || cur.cpClosing) return;
+    const page = document.querySelector('#sb .sb-p[data-p="6"]');
+    const st = (page && page.dataset.cp) || "idle";
+    if (st !== "idle" && st !== "failed") return;
+    sbCarPlayStart();
+  }, delay);
+}
+
 var sbCpWaitTimer = 0, sbCpWaitAt = 0;
 function sbCpWaitArm(state) {
   clearTimeout(sbCpWaitTimer); sbCpWaitTimer = 0;
-  if (state !== "starting" && state !== "auth" && state !== "ready") return;
+  if (state !== "starting" && state !== "auth" && state !== "ready" && state !== "waiting") return;
   sbCpWaitAt = Date.now();
   sbCpWaitTimer = setTimeout(() => {
     const page = document.querySelector('#sb .sb-p[data-p="6"]');
     const st = page && page.dataset.cp;
     if (!sbState().on || sbState().page !== 6) return;
-    if (st !== "starting" && st !== "auth" && st !== "ready") return;
-    // 原生探测/握手没有回调时，网页不能陪着无限等。到点主动收掉会话并交还页面。
+    if (st !== "starting" && st !== "auth" && st !== "ready" && st !== "waiting") return;
+    // 原生探测/握手没有回调时，网页不能陪着无限等。到点主动收掉会话，再自动重来。
     try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
-    sbCarPlaySet("failed", "连接超时，长按 Hello 重试");
-  }, 18000);
+    sbCarPlaySet("failed", "连接超时，正在自动重试");
+  }, 22000);
 }
 
 function sbCarPlaySet(state, message) {
@@ -338,12 +399,12 @@ function sbCarPlaySet(state, message) {
   }
   const s = sbState();
   const prev = page.dataset.cp;
-  // 失败不是“正在连接”，而是一条已经结束的死路：必须立刻交出页面控制权。
-  // 以前这里把 sbCpWant 留着，页面继续按“车机态”自动固定，左上角退化成只能长按的叉，
-  // 底部圆点/滑动也被锁死，所有终端都表现为“只能长按 Hello 重试”。现在失败即解锁。
+  // 失败不再等于用户放弃：只要这一轮是用户开的、自动续连没关，就保留 Want 并交给重试器。
+  // 只有用户没开过 / 关了自动续连时才回到 idle，避免页面被一条死路永久占着。
   if (state === "failed") {
-    sbCpWantSet(false);
-    if (s.pinned || s.pinAuto) sbPinAuto(false);
+    if (!sbCpWant() || !sbCpAutoOn()) sbCpWantSet(false);
+    // 只撤销自动固定；用户手动点的固定不能被一次握手失败清掉。
+    if (s.pinAuto) sbPinAuto(false);
     try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
   }
   page.dataset.cp = state;
@@ -375,27 +436,45 @@ function sbCarPlaySet(state, message) {
 
   if (state === "video") {
     sbCpWantSet(true);
+    sbCpRetryClear();
     // 不再自动「固定」页面：车机连着时也要能左右轮播，离页用 overlay 收起而不是 stop。
     // 只有这一轮刚接通时才把页面带回来；已经在别的轮播页上时不要把人拽走。
     if (s.on && s.page !== 6 && prev !== "video") { s.page = 6; sbGo(6, true); }
+    // 视频层已经在了，底部心率胶囊必须复位；之前拖动离页发过 show:0 的会话不该一直吞掉它。
+    if (sbCpHd()) sbCarPlayMsg({ cmd: "rail", show: 1 });
+  }
+  if (state === "connected") {
+    sbCpWantSet(true);
+    sbCpRetryClear();
+  }
+  if (state === "starting" || state === "auth" || state === "ready" || state === "waiting" || state === "listening") {
+    clearTimeout(sbCpRetryTimer); sbCpRetryTimer = 0;
   }
 
   // 原生叉自己点掉时也会回 idle；靠文案区分“进后台被停”和“用户主动停止”。
   if (state === "idle" && prev === "video" && !s.cpClosing && !document.hidden && !/后台/.test(message || "")) {
-    sbCpWantSet(false);
-    if (s.pinAuto) sbPinAuto(false);
+    // 网络/对端异常断开：不再把 Want 清掉、也不撤销固定，直接走自动重连。
+    sbCpRetryArm();
   } else if ((state === "idle" || state === "failed") && !sbCpWant() && s.pinAuto) {
     sbPinAuto(false);
+  }
+  if ((state === "idle" || state === "failed") && sbCpWant() && sbCpAutoOn() && !s.cpClosing) {
+    sbCpRetryArm();
   }
 
   const hint = $("#sb-cp-hint");
   if (hint) {
-    let text = "长按 Hello 进入 CarPlay";
+    let text = sbCpHd() ? "长按 Hello 接收 iPhone 的 CarPlay"
+      : sbCpLocalOn() ? "长按 Hello 在本机显示 CarPlay"
+      : sbCpPeerHint();
     if (state === "starting") text = message || "正在启动 CarPlay…";
     else if (state === "auth") text = message || "正在认证配件…";
     else if (state === "ready") text = message || "已连接，正在协商画面…";
+    else if (state === "waiting") text = message || (sbCpHd() ? "等待 iPhone 连接…" : "已向 iPad 请求 CarPlay…");
+    else if (state === "listening") text = message || "等待 iPhone 连接…";
     else if (state === "video") text = "CarPlay 已连接";
-    else if (state === "failed") text = (message || "启动失败") + " · 可滑动离开，长按重试";
+    else if (state === "connected") text = message || "CarPlay 已连接 · iPad 正在显示";
+    else if (state === "failed") text = (message || "启动失败") + (sbCpWant() && sbCpAutoOn() ? " · 正在自动重试" : " · 长按重试");
     else if (state === "credentials") text = "需要先连接 Wi-Fi";
     hint.textContent = text;
   }
@@ -475,14 +554,73 @@ window.wkCarPlayState = function (payload) {
   sbCarPlaySet(st, String(p.msg || ""));
 };
 
+/* 用户一旦开始过这一轮 CarPlay，就把 Want 留着：壳被系统停掉、网断掉、
+   App 被杀掉再开，都靠它自动把同一角色重新拉起来，不再让人滑回本页长按。 */
+function sbCarPlayStartNow() {
+  const c = sbCpConfig();
+  sbCpRetryClear();
+  if (sbCpHd()) {
+    if (!sbCarPlayMsg(Object.assign({ cmd: "startReceiver" }, c))) {
+      sbCpWantSet(false);
+      sbCarPlaySet("failed", "当前壳版本不支持 CarPlay 接收端"); return;
+    }
+    sbCpWantSet(true);
+    sbCarPlaySet("starting", "正在启动 iPad 接收端…");
+    return;
+  }
+  if (sbCpLocalOn()) {
+    // iPhone 自己显示：回到原来的同机 CarPlay，不依赖 iPad，也不要求先填 iPad 地址。
+    if (!sbCarPlayMsg(Object.assign({ cmd: "start" }, c))) {
+      sbCpWantSet(false);
+      sbCarPlaySet("failed", "当前壳版本不支持本机 CarPlay"); return;
+    }
+    sbCpWantSet(true);
+    sbCarPlaySet("starting", "正在启动本机 CarPlay…");
+    return;
+  }
+  const peer = sbCpPeer();
+  if (!peer.host) {
+    sbCarPlaySheet(true, "", "先填写 iPad 屏幕底部显示的地址", true);
+    sbCarPlayHintPaint();
+    return;
+  }
+  if (!sbCarPlayMsg(Object.assign({ cmd: "startRemote", target: peer.host, port: peer.port, targetName: "iPad" }, c))) {
+    sbCpWantSet(false);
+    sbCarPlaySet("failed", "当前壳版本不支持 CarPlay 远程主机"); return;
+  }
+  sbCpWantSet(true);
+  sbCarPlaySet("starting", "");
+}
+
+var sbCarPlayStartAt = 0;
 function sbCarPlayStart() {
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
-  if (page) sbCpWantSet(true);
-  const c = sbCpConfig();
-  if (!sbCarPlayMsg({ cmd: "start", width: c.width, height: c.height, maxFPS: c.maxFPS, codec: c.codec, audio: c.audio })) {
-    sbCarPlaySet("failed", "当前壳版本不支持 CarPlay"); return;
+  const st = (page && page.dataset.cp) || "idle";
+  // 上一次会话停在 starting/auth/ready/waiting/video 时，壳里其实还占着 active，
+  // 再发一次 start 会被原生 guard 静默丢掉，界面就永远停在「正在启动」。
+  // 先收干净再起一次，长按或自动重试都不会被旧会话卡住。
+  const busy = st === "starting" || st === "auth" || st === "ready" ||
+               st === "waiting" || st === "video" || st === "connected";
+  if (busy && Date.now() - sbCarPlayStartAt > 1200) {
+    sbCarPlayStartAt = Date.now();
+    try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
+    sbCarPlaySet("idle", "");
+    setTimeout(() => {
+      if (sbState().on && sbState().page === 6) sbCarPlayStartNow();
+    }, 360);
+    return;
   }
-  sbCarPlaySet("starting", "");
+  if (Date.now() - sbCarPlayStartAt < 1200) return;
+  sbCarPlayStartAt = Date.now();
+  sbCarPlayStartNow();
+}
+
+function sbCarPlayHintPaint() {
+  const hint = $("#sb-cp-hint");
+  if (!hint) return;
+  const page = document.querySelector('#sb .sb-p[data-p="6"]');
+  if (page && page.dataset.cp && page.dataset.cp !== "idle" && page.dataset.cp !== "failed") return;
+  hint.textContent = sbCpHd() ? "长按 Hello 接收 iPhone 的 CarPlay" : sbCpPeerHint();
 }
 
 function sbCarPlayForget() {
@@ -523,6 +661,13 @@ function sbCarPlayPage(idx) {
 }
 
 /* ---------- 固定：锁当前页、禁翻页；CarPlay 连接后自动固定且不可点 ---------- */
+/* 固定以 localStorage 为准：即使状态对象被某次异步回调短暂重置，用户点过的固定也不能失效。 */
+function sbLocked() {
+  const s = sbState();
+  if (s.pinned || s.pinAuto) return true;
+  try { return localStorage.getItem("sbPin") === "1"; } catch (e) { return false; }
+}
+
 function sbPinSave() {
   const s = sbState();
   try {
@@ -533,6 +678,10 @@ function sbPinSave() {
 
 function sbPaintPin() {
   const s = sbState();
+  // 状态对象若被异步回调短暂改回 false，以用户点过的持久固定为准，避免按钮显示固定但页面仍轮播。
+  if (!s.pinned) {
+    try { if (localStorage.getItem("sbPin") === "1") s.pinned = true; } catch (e) {}
+  }
   const box = $("#sb"), b = $("#sb-pin");
   if (box) box.classList.toggle("sb-pinned", !!s.pinned);
   if (b) {
@@ -564,13 +713,15 @@ function sbPinHold() {
 /* CarPlay 连通时由系统自动固定：按钮显示「已固定」，不可再点掉。 */
 function sbPinAuto(on) {
   const s = sbState();
+  const wasAuto = s.pinAuto;
   s.pinAuto = !!on;
   if (on) {
     s.pinned = true;
     sbPinHold();
   } else {
     clearInterval(s.pinTimer); s.pinTimer = null;
-    s.pinned = false;
+    // 只解除“系统自动固定”，不能把用户手动点过的固定顺手清掉。
+    if (wasAuto) s.pinned = false;
   }
   sbPinSave();
   sbPaintPin();
@@ -582,7 +733,14 @@ function sbPin() {
   s.pinned = !s.pinned;
   clearInterval(s.pinTimer);
   s.pinTimer = null;
-  if (s.pinned) { sbPinPing(); s.pinTimer = setInterval(sbPinPing, 3000); }
+  if (s.pinned) {
+    // 如果刚好有一轮自动翻页正在滑，立刻收回来；固定后不能再翻走一页。
+    s.autoUntil = 0;
+    s.lastTurn = Date.now();
+    sbStopAnim();
+    sbPinPing();
+    s.pinTimer = setInterval(sbPinPing, 3000);
+  }
   else {
     try {
       const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.wkNative;
@@ -870,6 +1028,16 @@ function sbBuild() {
           </div>
           <div class="sb-cp-side">
             <div id="sb-cp-form">
+              <div class="sb-cp-peer" id="sb-cp-peer">
+                <div class="sb-cp-field">
+                  <span>iPad</span>
+                  <input id="sb-cp-host" type="text" placeholder="192.168.1.10" inputmode="decimal" autocapitalize="none" autocorrect="off" spellcheck="false">
+                </div>
+                <div class="sb-cp-field">
+                  <span>端口</span>
+                  <input id="sb-cp-port" type="text" placeholder="7000" inputmode="numeric" autocapitalize="none" autocorrect="off" spellcheck="false">
+                </div>
+              </div>
               <div class="sb-cp-field">
                 <span>Wi-Fi</span>
                 <input id="sb-cp-ssid" type="text" placeholder="网络名称" autocapitalize="none" autocorrect="off" spellcheck="false">
@@ -932,6 +1100,7 @@ function sbBuild() {
   // 有面板打开时，单击还是先关面板（那一层本来就不需要防误触）。
   sbBindBackHold();
   sbBindHelloHold();
+  sbCarPlayHintPaint();
   $("#sb-flip").addEventListener("click", (e) => { e.stopPropagation(); sbFlip(); });
   const setBtn = $("#sb-set-btn");
   if (setBtn) setBtn.addEventListener("click", (e) => {
@@ -1124,7 +1293,7 @@ function sbBuild() {
   if (cpWiFi) cpWiFi.addEventListener("click", (e) => { e.stopPropagation(); sbCarPlayMsg({ cmd: "wifiSettings" }); });
   const cpRetry = $("#sb-cp-retry");
   if (cpRetry) cpRetry.addEventListener("click", (e) => {
-    e.stopPropagation(); sbCarPlaySheet(false); sbCarPlayMsg({ cmd: "start" }); sbCarPlaySet("starting", "");
+    e.stopPropagation(); sbCarPlaySheet(false); sbCarPlayStart();
   });
   const pin = $("#sb-pin");
   if (pin) pin.addEventListener("click", (e) => { e.stopPropagation(); sbPin(); });
@@ -1628,6 +1797,7 @@ function sbClose(instant) {
   // 人可能正停在别的轮播页上，会话照样要收干净，不能留下没人管的 CarPlay 连接。
   const cpLive = sbCpVideo() || sbCpWant();
   sbCpWantSet(false);
+  sbCpRetryClear();
   sbPinSave();
   sbPaintPin();
   if (SB_CP_LAST === 6 || cpLive) sbCarPlayMsg({ cmd: "stop" });
@@ -1853,6 +2023,33 @@ function sbCpConfig() {
   const d = sbCpDims();
   return { width: d.width, height: d.height, maxFPS: sbCpFps(), codec: sbCpCodec(), audio: sbCpAudio() ? 1 : 0 };
 }
+/* HD（iPad）只做接收端；iPhone 默认投到 iPad，也可以切回本机显示。 */
+function sbCpHd() { return !!window.wkHD; }
+function sbCpLocalOn() { return sbPref("cpLocal") === "1"; }
+function sbCpPeer() {
+  let host = "";
+  try { host = String(localStorage.getItem("cpHost") || "").trim(); } catch (e) {}
+  let port = 7000;
+  try {
+    const n = Number(localStorage.getItem("cpPort"));
+    if (n >= 1 && n <= 65535) port = n;
+  } catch (e) {}
+  return { host: host, port: port };
+}
+function sbCpPeerSave(host, port) {
+  const h = String(host || "").trim();
+  let p = Number(port);
+  if (!(p >= 1 && p <= 65535)) p = 7000;
+  try {
+    localStorage.setItem("cpHost", h);
+    localStorage.setItem("cpPort", String(p));
+  } catch (e) {}
+}
+function sbCpPeerHint() {
+  if (sbCpLocalOn()) return "长按 Hello 在本机显示 CarPlay";
+  const p = sbCpPeer();
+  return p.host ? `长按 Hello 投到 ${p.host}:${p.port}` : "长按 Hello 连接 iPad";
+}
 function sbCpConfigSend() {
   const c = sbCpConfig();
   sbCarPlayMsg({ cmd: "config", width: c.width, height: c.height, maxFPS: c.maxFPS, codec: c.codec, audio: c.audio });
@@ -1860,11 +2057,12 @@ function sbCpConfigSend() {
 
 function sbAutoTurn() {
   const s = sbState();
-  if (!s.on || s.pinned || !sbAutoOn()) return;
-  // CarPlay 一旦开始连接 / 出画面，这一页就定住：不再自动翻走，避免把车机画面切掉
+  if (!s.on || sbLocked() || !sbAutoOn()) return;
+  // CarPlay 一旦开始连接 / 出画面 / 远端回执已连接，这一页就定住：
+  // 不再自动翻走，避免把车机画面切掉，也让 iPhone 的“已连接”状态留得住。
   if (s.page === 6) {
     const cp = document.querySelector('#sb .sb-p[data-p="6"]');
-    if (cp && (cp.dataset.cp || "idle") !== "idle") return;
+    if (cp && ((cp.dataset.cp || "idle") !== "idle" || sbCpWant())) return;
   }
   const now = Date.now();
   if (now - (s.lastTouch || 0) < SB_AUTO_IDLE) return;
@@ -1884,7 +2082,7 @@ function sbAutoTurn() {
 /* ---------- 分页 ---------- */
 function sbGo(i, silent, auto) {
   const s = sbState();
-  if (s.pinned && !silent) return;
+  if (sbLocked() && !silent) return;
   const track = $("#sb-track");
   if (!track) return;
   const idx = Math.max(0, Math.min(SB_PAGES - 1, i));
@@ -1948,7 +2146,7 @@ function sbDragStart(e) {
   const s = sbState();
   const sheet = $("#sb-cp-sheet");
   const set = $("#sb-set");
-  if (!s.on || s.pinned || (sheet && !sheet.classList.contains("hidden")) ||
+  if (!s.on || sbLocked() || (sheet && !sheet.classList.contains("hidden")) ||
       (set && !set.classList.contains("hidden")) || e.touches.length !== 1) return;
   const track = $("#sb-track");
   if (!track) return;
@@ -2243,8 +2441,10 @@ function sbSetHtml() {
       <div class="sb-set-hint" id="sb-set-res-hint">${SB_CP_INFO[res]} · ${res === "1024x768" ? "4:3" : "16:9"}</div>
       <div class="sb-set-row"><span>帧率</span>${sbSetSeg([[30, "30"], [60, "60"]], fps, "sb-cpfps")}</div>
       <div class="sb-set-hint">${perfHint}</div>
+      ${sbCpHd() ? "" : `<div class="sb-set-row"><span>CarPlay 画面</span>${sbSetSeg([["remote", "iPad"], ["local", "本机"]], sbCpLocalOn() ? "local" : "remote", "sb-cplocal")}</div>
+      <div class="sb-set-hint">iPad：投到同一 Wi-Fi 的 iPad；本机：直接用 iPhone 显示，不依赖 iPad</div>`}
       ${sbSetSwitch("cp", "自动续连", sbCpAutoOn())}
-      <div class="sb-set-hint">切后台回来不用再长按 Hello</div>
+      <div class="sb-set-hint">切后台、断连或重开 App 后自动续上，不用再长按 Hello</div>
     </section>
     <section class="sb-set-card">
       <div class="sb-set-eyebrow">编码与输出</div>
@@ -2287,6 +2487,13 @@ function sbSetPaint() {
       sbSetPaint();
     };
   });
+  scroll.querySelectorAll("[data-sb-cplocal]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      sbPrefSet("cpLocal", b.dataset.sbCplocal === "local" ? "1" : "0");
+      sbSetPaint();
+    };
+  });
   scroll.querySelectorAll("[data-sb-cpfps]").forEach((b) => {
     b.onclick = (e) => {
       e.stopPropagation();
@@ -2308,9 +2515,14 @@ function sbSetPaint() {
     e.stopPropagation();
     sbCpConfigSend();
     sbSetClose(true);
-    // 车机不能在会话中途改分辨率/编码，必须让壳用新配置重新握手一次
-    sbCarPlayMsg({ cmd: "restart" });
-    toast("正在用新画面参数重连 CarPlay");
+    // 画面参数或本机/远程角色只能在会话开始前生效：先收掉旧会话，再按新角色重新握手。
+    try { sbCarPlayMsg({ cmd: "stop" }); } catch (err) {}
+    sbCarPlaySet("idle", "");
+    const restart = sbCpWant() || sbCpVideo();
+    if (restart) setTimeout(() => {
+      if (sbState().on && sbState().page === 6) sbCarPlayStartNow();
+    }, 360);
+    toast(restart ? "正在用新设置重连 CarPlay" : "CarPlay 设置已保存");
   };
 }
 function sbSetOpen() {
@@ -2665,6 +2877,8 @@ async function sbLoadHr() {
         s.hr = [...seen.values()].filter((x) => x.t >= cut)
           .sort((a, b) => a.t - b.t).slice(-1800);
       }
+      const latest = (s.hr || [])[s.hr.length - 1];
+      if (latest) sbHrPushNative(latest.v, latest.t);
     } else {
       s.hrAt = Date.now() - 10e3;
     }
@@ -2991,14 +3205,22 @@ function sbPaintMarket() {
    网页在 iOS 里拿不到 HealthKit，心率全靠壳里的蓝牙中心（BleHeart）当 BLE 外设收样本，
    收到就 push window.sbHrSample(bpm, at)；也可以用快捷指令 POST 上来。
    曲线和数字就会跟着动；没有任何数据时不画假的波形。 */
+function sbHrPushNative(bpm, at) {
+  const v = Number(bpm);
+  if (!v || v < 25 || v > 240) return;
+  // 网页里的心率（服务端/蓝牙/快捷指令）同步给原生，CarPlay 底部胶囊才有同一份数据。
+  try { sbCarPlayMsg({ cmd: "hr", bpm: v, at: Number(at) || Date.now() }); } catch (e) {}
+}
 function sbHrSample(bpm, at) {
   const s = sbState();
   const v = Number(bpm);
   if (!v || v < 25 || v > 240) return;
+  const t = Number(at) > 0 && Number(at) < 1e12 ? Number(at) * 1000 : (Number(at) || Date.now());
   s.hr = s.hr || [];
-  s.hr.push({ v, t: Number(at) || Date.now() });
+  s.hr.push({ v, t });
   // 留 30 分钟（1Hz 最多 1800 条）：只留 40 条的话「高强度分钟」根本没法算
   if (s.hr.length > 1800) s.hr.shift();
+  sbHrPushNative(v, t);
   sbPaintHr();
 }
 

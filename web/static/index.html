@@ -21,9 +21,9 @@ document.documentElement.setAttribute("data-theme",d?"dark":"light");})();</scri
 <script>/* 玻璃档位先落属性：首帧就用用户选的档，不留一遍默认档的白闪 */
 try{var g=localStorage.getItem("sbGlass");if(g)document.documentElement.setAttribute("data-glass",g)}catch(e){}</script>
 <script>/* HD 壳在文档开始前注入 window.wkHD；iPhone 不注入，下面整段不会执行，也不会加载 HD 样式 */if(window.wkHD){document.documentElement.classList.add("wk-hd");}</script>
-<link rel="stylesheet" href="static/style.css?v=a5bce786b7">
+<link rel="stylesheet" href="static/style.css?v=16e8fc38ff">
 <link rel="stylesheet" href="static/glass.css?v=77aadbb3f2">
-<script>if(window.wkHD){document.write('<link rel="stylesheet" href="static/style-hd.css?v=42">');}</script>
+<script>if(window.wkHD){document.write('<link rel="stylesheet" href="static/style-hd.css?v=52">');}</script>
 </head>
 <body>
 <script>
@@ -483,7 +483,7 @@ window.__bootGuard = setTimeout(function () {
 <script src="static/app-trend.js?v=9ba0a12168"></script>
 <script src="static/app-chart.js?v=9ba0a12168"></script>
 <script src="static/app-work.js?v=9ba0a12168"></script>
-<script src="static/app-standby.js?v=4dbb948b32"></script>
+<script src="static/app-standby.js?v=40d54d9b0e"></script>
 <script src="static/app-boot.js?v=9ba0a12168"></script>
 <script>if(window.wkHD){var s=document.createElement("script");s.src="static/hd.js?v=dd6d5b36";s.onload=function(){try{if(window.sbLayout)window.sbLayout()}catch(e){}};document.body.appendChild(s);}</script>
 </body>

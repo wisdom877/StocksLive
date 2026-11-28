@@ -1388,11 +1388,138 @@ html.wk-hd #sb .sb-cal-md{
   font-size:clamp(40px, 5vw, 66px);
 }
 
-/* ================= v40：HD 工作页的实时任务行从导航栏上方挪到屏幕最底部 ================= */
-/* 原来的 .wk-next 在 HD 被抬到胶囊上方 86px，和版本号、新建按钮挤在同一条带上。
-   现在改为贴屏幕最底、落在导航栏下方（和 iPhone 的写法一致）：
-   底部偏移取安全区本身，文字正好落在胶囊下沿与屏幕边缘之间那条窄带里。 */
+/* ================= v40：HD 工作页的实时任务行压到屏幕最底边 ================= */
+/* .wk-next 在 HD 原本被抬到胶囊上方 86px。这里把它压到屏幕最底：
+   先给 2px 兜底（老 WebKit 不支持 env()/max() 时也不会退回 86px），
+   再用 env(safe-area-inset-bottom) 整体下移，文字正好落在胶囊下沿与屏幕边缘之间的窄带。
+   高度 13px、窄带 14px，不会与胶囊重叠。 */
 html.wk-hd .wk-next{
-  bottom:max(2px, env(safe-area-inset-bottom, 0px));
+  bottom:2px;
+  bottom:calc(env(safe-area-inset-bottom, 0px) + 0px);
   z-index:32;
+}
+
+/* ================= v43：HD CarPlay 页设置键从返回键下方脱开 ================= */
+/* 返回键底部 = --hd-status + 6 + 38u；设置键此前固定 56u，正好压在返回键上。
+   这里把设置键放到返回键下方，留出一段明显间距，并和返回键中心对齐。 */
+html.wk-hd #sb .sb-set-btn{
+  left:calc(max(env(safe-area-inset-left, 0px), 24px) + calc(var(--sb-u) * 5px));
+  top:calc(var(--hd-status) + 6px + calc(var(--sb-u) * 38px) + calc(var(--sb-u) * 14px));
+}
+
+/* ================= v44：HD CarPlay 页设置键改为返回键右侧并排 ================= */
+/* 不再做左上竖排：设置键变成和返回键同高的小胶囊，横向排在返回键右侧，
+   彻底消除“叠在返回键上/下方”的视觉。 */
+html.wk-hd #sb .sb-set-btn{
+  left:calc(max(env(safe-area-inset-left, 0px), 24px) + calc(var(--sb-u) * 48px));
+  top:calc(var(--hd-status) + 6px);
+  width:calc(var(--sb-u) * 52px);
+  height:calc(var(--sb-u) * 40px);
+  writing-mode:horizontal-tb;
+  text-orientation:mixed;
+  letter-spacing:.06em;
+}
+
+/* ================= v45：把 HD CarPlay 设置键与返回键之间的间距真正拉开 ================= */
+/* 48u 在真机玻璃投影下仍显得贴在一起；改为返回键右侧 28u 的空档。 */
+html.wk-hd #sb .sb-set-btn{
+  left:calc(max(env(safe-area-inset-left, 0px), 24px) + calc(var(--sb-u) * 66px));
+}
+
+/* ================= v46：HD 设置面板不再在左上角挂标题 ================= */
+/* 设置页左上角已有返回键 + 设置键，面板自身再浮一枚“CarPlay 设置”标题，
+   正好和两颗键叠在一起。HD 下直接收掉这枚标题，顶部只保留两颗键。 */
+html.wk-hd #sb .sb-set .sheet-head{
+  display:none !important;
+}
+
+/* ================= v48：HD 设置页两张卡片再下移，彻底避开顶部按钮 ================= */
+/* 顶部按钮底边 = --hd-status + 6 + 40u；v47 只留 18u，真机上玻璃投影仍会压到卡片上沿。
+   这里把间距拉到 40u，按钮与第一张卡之间留出明确空白，不再有“贴在一起”的观感。 */
+html.wk-hd #sb .sb-set-scroll{
+  padding-top:calc(var(--hd-status) + 6px + calc(var(--sb-u) * 40px) + calc(var(--sb-u) * 40px));
+}
+
+/* ================= v49：HD CarPlay 视频态底部操作条 =================
+   车机画面是 16:9，上下本来就会留出黑边。把返回 / 设置 / 固定 / 翻转
+   全部收进底部黑边，不再压到车机原生画面；四颗键保持同一高度、同一玻璃材质。
+   底部操作条不额外加底板，避免在车机界面下面再出现一层“工具条”的 AI 感。 */
+html.wk-hd #sb.sb-cp-video{
+  --hd-cp-left:max(env(safe-area-inset-left, 0px), 24px);
+  --hd-cp-gap:8px;
+  --hd-cp-bottom:8px;
+  --hd-cp-h:42px;
+}
+html.wk-hd #sb.sb-cp-video .sb-back{
+  top:auto;
+  bottom:var(--hd-cp-bottom);
+  left:var(--hd-cp-left);
+  width:var(--hd-cp-h);
+  height:var(--hd-cp-h);
+}
+html.wk-hd #sb.sb-cp-video .sb-set-btn{
+  top:auto;
+  bottom:var(--hd-cp-bottom);
+  left:calc(var(--hd-cp-left) + 50px);
+  width:64px;
+  height:var(--hd-cp-h);
+  writing-mode:horizontal-tb;
+  text-orientation:mixed;
+  letter-spacing:.04em;
+  font-size:12px;
+}
+html.wk-hd #sb.sb-cp-video .sb-pin{
+  top:auto;
+  bottom:var(--hd-cp-bottom);
+  left:calc(var(--hd-cp-left) + 122px);
+  width:56px;
+  height:var(--hd-cp-h);
+  writing-mode:horizontal-tb;
+  text-orientation:mixed;
+  letter-spacing:.04em;
+  font-size:12px;
+}
+html.wk-hd #sb.sb-cp-video .sb-flip{
+  top:auto;
+  bottom:var(--hd-cp-bottom);
+  left:calc(var(--hd-cp-left) + 186px);
+  right:auto;
+  width:56px;
+  height:var(--hd-cp-h);
+  padding:0;
+  writing-mode:horizontal-tb;
+  text-orientation:mixed;
+  letter-spacing:.04em;
+  font-size:12px;
+  border:.5px solid var(--sb-rim);
+  border-radius:999px;
+  background:linear-gradient(180deg,var(--sb-fill-hi),var(--sb-fill-lo));
+  color:var(--sb-2);
+  box-shadow:var(--sb-pill-sh);
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+/* 视频态不需要页码圆点：底部已经是一条完整的操作行，圆点只会和按钮抢位置。 */
+html.wk-hd #sb.sb-cp-video .sb-dots{
+  display:none;
+}
+/* HD 的心率由原生 HeartRateRailView 浮在画面顶部，这里关掉网页右侧那条旧兜底，
+   避免两个心率入口同时出现。 */
+html.wk-hd #sb.sb-cp-video .sb-cp-hr{
+  display:none !important;
+}
+/* 按钮移到底部后，设置面板顶部不再需要为左上两颗键让出 80u 的空白；
+   只留状态栏安全区，面板直接从顶部展开。 */
+html.wk-hd #sb .sb-set-scroll{
+  padding-top:calc(var(--hd-status) + 14px);
+}
+
+/* 打开设置时只保留返回和设置；固定/翻转没有意义，也不该压在设置面板下面。 */
+html.wk-hd #sb.sb-cp-video.sb-set-open .sb-pin,
+html.wk-hd #sb.sb-cp-video.sb-set-open .sb-flip{
+  display:none !important;
+  opacity:0 !important;
+  visibility:hidden !important;
+  pointer-events:none !important;
 }

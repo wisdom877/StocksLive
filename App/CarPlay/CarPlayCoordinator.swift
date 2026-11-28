@@ -122,6 +122,7 @@ final class CarPlayCoordinator: NSObject {
             recovering = false; recoveryCount = 0; lastRecoveryAt = 0
             let ssid = (body["ssid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let password = body["password"] as? String
+            push(state: "starting", message: "正在准备本机 CarPlay…")
             start(ssid: ssid, password: password)
         case "startRemote":
             // iPhone 只做虚拟配件探针，目标指向同一局域网内的 iPad。
@@ -132,12 +133,14 @@ final class CarPlayCoordinator: NSObject {
             recovering = false; recoveryCount = 0; lastRecoveryAt = 0
             let ssid = (body["ssid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let password = body["password"] as? String
+            push(state: "starting", message: "正在准备远程 CarPlay…")
             startRemote(ssid: ssid, password: password)
         case "startReceiver":
             // iPad 只做接收端，不启动本机探针。
             role = .receiver
             saveReceiverConfig(body)
             recovering = false; recoveryCount = 0; lastRecoveryAt = 0
+            push(state: "starting", message: "正在准备 iPad 接收端…")
             startReceiver()
         case "config":
             saveReceiverConfig(body)
@@ -164,6 +167,15 @@ final class CarPlayCoordinator: NSObject {
             // 网页说不要右侧心率栏就整条收掉；以后想放回来发 show:1 即可。
             railShow = (body["show"] as? Int ?? 1) != 0
             syncHeartRailVisibility(animated: true)
+        case "hr":
+            // 网页里的心率（服务端 / 蓝牙 / 快捷指令）同步进原生中心，
+            // 让 CarPlay 底部胶囊和网页健康卡片读同一份最新样本。
+            let bpm = (body["bpm"] as? Int) ?? Int((body["bpm"] as? Double) ?? 0)
+            guard (25...240).contains(bpm) else { break }
+            let rawAt = (body["at"] as? Double) ?? Double(body["at"] as? Int ?? 0)
+            let seconds = rawAt > 1_000_000_000_000 ? rawAt / 1000 : rawAt
+            let date = seconds > 0 ? Date(timeIntervalSince1970: seconds) : Date()
+            HeartRateCenter.shared.ingest(bpm, at: date)
         case "overlay":
             // 网页要压一层整屏设置：先把原生视频层与心率栏收走，关掉设置再放回来。
             covered = (body["covered"] as? Int ?? 0) != 0
@@ -240,7 +252,18 @@ final class CarPlayCoordinator: NSObject {
     }
 
     private func start(ssid: String?, password: String?) {
-        guard !active, !resolvingSSID else { return }
+        if active {
+            push(state: "starting", message: "正在重启本机 CarPlay…")
+            stop(reason: nil, keepRecovery: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.start(ssid: ssid, password: password)
+            }
+            return
+        }
+        if resolvingSSID {
+            push(state: "starting", message: "正在读取当前 Wi-Fi…")
+            return
+        }
         if !recovering { recoveryCount = 0; lastRecoveryAt = 0 }
         if let ssid, !ssid.isEmpty {
             begin(ssid: ssid, password: password ?? "")
@@ -320,7 +343,20 @@ final class CarPlayCoordinator: NSObject {
     }
 
     private func startRemote(ssid: String?, password: String?) {
-        guard !active, !resolvingSSID else { return }
+        // 网页/自动重试再发一次 start 时，不能因为 native 里 active 还是 true 就静默丢掉。
+        // 先收掉旧会话，再按同一条远程链路重新握手；只多花 0.4 秒，不会卡在“正在启动”。
+        if active {
+            push(state: "starting", message: "正在重启 CarPlay 会话…")
+            stop(reason: nil, keepRecovery: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.startRemote(ssid: ssid, password: password)
+            }
+            return
+        }
+        if resolvingSSID {
+            push(state: "starting", message: "正在读取当前 Wi-Fi…")
+            return
+        }
         guard let target = remoteTarget else {
             push(state: "failed", message: "请先填写 iPad 的局域网地址。")
             return
@@ -346,7 +382,15 @@ final class CarPlayCoordinator: NSObject {
     }
 
     private func startReceiver() {
-        guard !active, !resolvingSSID else { return }
+        if active {
+            push(state: "starting", message: "正在重启 iPad 接收端…")
+            stop(reason: nil, keepRecovery: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.startReceiver()
+            }
+            return
+        }
+        if resolvingSSID { return }
         if !recovering { recoveryCount = 0; lastRecoveryAt = 0 }
         beginReceiver()
     }
@@ -392,12 +436,11 @@ final class CarPlayCoordinator: NSObject {
         }
         _ = address   // 只用来确认本机确实在局域网上；目标地址来自网页。
         lastRemoteStatus = ""
+        // 先让探针起来：状态回执监听是锦上添花，绝不能挡在真实 CarPlay 握手前面。
+        // 以前这里先起 UDP listener，任何监听初始化异常/权限弹层都可能把启动流程卡在
+        // 「正在启动」而探针根本没发出去；现在把它挪到 probe.start 之后。
         remoteStatusListener?.stop()
-        let listener = RemoteStatusListener()
-        listener.onState = { [weak self] state in self?.handleRemoteStatus(state) }
-        do { try listener.start(port: RemoteStatusPacket.port) }
-        catch { log("远程状态监听失败：\(error.localizedDescription)") }
-        remoteStatusListener = listener
+        remoteStatusListener = nil
         if !ssid.isEmpty {
             UserDefaults.standard.set(ssid, forKey: Self.ssidKey)
             lastSSID = ssid
@@ -432,6 +475,14 @@ final class CarPlayCoordinator: NSObject {
              message: "已向 \(remoteTargetName)（\(target.host):\(target.port)）请求 CarPlay，等待 iPad 连接…",
              extra: ["target": target.host, "port": Int(target.port)])
         probe.start(configuration: config, identity: identity, expectsLocalControl: false)
+
+        // 探针已经发出后再挂 UDP 7001；即便监听失败，也只影响“iPhone 显示已连接”，
+        // 不影响 iPad 的真实视频链路。
+        let listener = RemoteStatusListener()
+        listener.onState = { [weak self] state in self?.handleRemoteStatus(state) }
+        do { try listener.start(port: RemoteStatusPacket.port) }
+        catch { log("远程状态监听失败：\(error.localizedDescription)") }
+        remoteStatusListener = listener
     }
 
     private func beginReceiver() {
@@ -457,6 +508,7 @@ final class CarPlayCoordinator: NSObject {
         displayedVideo = false
         controlConnected = false
         covered = false
+        railShow = true
         recovering = false
         lastVideoAt = CACurrentMediaTime()
         videoStartAt = lastVideoAt
@@ -554,6 +606,7 @@ final class CarPlayCoordinator: NSObject {
         displayedVideo = false
         controlConnected = false
         covered = false
+        railShow = true
         recovering = false
         lastVideoAt = CACurrentMediaTime()
         videoStartAt = lastVideoAt
@@ -824,9 +877,10 @@ final class CarPlayCoordinator: NSObject {
         closeButton.isHidden = true
     }
 
-    /// 没真实心率、还没出画面、或不在横向留白里时，整颗胶囊收起，不显示空壳。
+    /// 没出画面、或不在横向留白里时收起。心率暂时为空也保留胶囊：
+    /// 网页会把最新样本同步进来，先显示「—」比整条消失更像一个稳定的仪表。
     private func syncHeartRailVisibility(animated: Bool = false) {
-        let visible = active && displayedVideo && railAllowed && railShow && !covered && HeartRateCenter.shared.current() != nil
+        let visible = active && displayedVideo && railAllowed && railShow && !covered
         if visible {
             heartRail.isHidden = false
             if animated {
