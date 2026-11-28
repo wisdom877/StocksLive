@@ -242,10 +242,10 @@ final class HeartRateRailView: UIView {
         footnote.frame = CGRect(x: pad, y: 195, width: w - pad * 2, height: 12)
     }
 
-    /// 顶部横条：左边心率/BPM，中间区间与刻度，右边 1 分钟走势和本次范围。
-    /// 高度只有 44pt，所有元素都压在一行主信息 + 一行辅助信息里。
+    /// 底部横条：按钮组右侧的整条空白都归心率胶囊。
+    /// 左边是心率/BPM，中间是区间刻度，右侧是一段尽量长的 1 分钟走势和本次范围。
     private func layoutHorizontal(width w: CGFloat, height h: CGFloat) {
-        let radius = min(22, h / 2)
+        let radius = min(21, h / 2)
         layer.cornerRadius = radius
         layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: radius).cgPath
         glass.frame = bounds
@@ -253,43 +253,54 @@ final class HeartRateRailView: UIView {
         tint.frame = glass.contentView.bounds
         sheen.frame = CGRect(x: 0, y: 0, width: w, height: h * 0.55)
 
-        let pad: CGFloat = 12
-        heart.frame = CGRect(x: pad, y: 13, width: 14, height: 14)
+        let pad: CGFloat = 14
+        heart.frame = CGRect(x: pad, y: 12, width: 14, height: 14)
         title.text = "心率"
         title.font = .systemFont(ofSize: 8.5, weight: .semibold)
-        title.frame = CGRect(x: pad + 18, y: 7, width: 30, height: 10)
+        title.frame = CGRect(x: pad + 18, y: 5, width: 30, height: 10)
 
         bpmLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
         bpmLabel.adjustsFontSizeToFitWidth = true
         bpmLabel.minimumScaleFactor = 0.8
-        bpmLabel.frame = CGRect(x: pad + 18, y: 17, width: 52, height: 24)
+        bpmLabel.frame = CGRect(x: pad + 18, y: 14, width: 62, height: 24)
         unitLabel.text = "BPM"
         unitLabel.font = .systemFont(ofSize: 7.5, weight: .medium)
-        unitLabel.frame = CGRect(x: pad + 72, y: 27, width: 24, height: 9)
+        unitLabel.frame = CGRect(x: pad + 82, y: 26, width: 24, height: 9)
 
-        let zoneX = pad + 102
-        let trendW = min(72, max(48, w * 0.22))
-        let trendX = w - pad - trendW
-        zoneDot.frame = CGRect(x: zoneX, y: 15, width: 5, height: 5)
+        let zoneX = pad + 106
+        let liveX = w - pad - 5
+        let rangeW: CGFloat = 76
+        let rangeX = liveX - 8 - rangeW
+        let trendRight = rangeX - 12
+        let trendW = min(420, max(120, trendRight - 220))
+        let trendX = trendRight - trendW
+
+        zoneDot.frame = CGRect(x: zoneX, y: 13, width: 5, height: 5)
         zoneLabel.font = .systemFont(ofSize: 8.5, weight: .semibold)
-        zoneLabel.frame = CGRect(x: zoneX + 9, y: 7, width: max(30, trendX - zoneX - 15), height: 12)
+        zoneLabel.frame = CGRect(x: zoneX + 9, y: 5,
+                                 width: max(30, trendX - zoneX - 15), height: 12)
         zonePct.isHidden = true
-        zoneTrack.frame = CGRect(x: zoneX + 9, y: 23, width: max(24, trendX - zoneX - 18), height: 2.5)
+        zoneTrack.frame = CGRect(x: zoneX + 9, y: 22,
+                                 width: max(30, trendX - zoneX - 18), height: 2.5)
         zoneScale.frame = zoneTrack.bounds
         let progress = zoneProgress
         zoneKnob.frame = CGRect(x: zoneTrack.frame.minX + progress * zoneTrack.frame.width - 2.5,
                                 y: zoneTrack.frame.minY - 1, width: 5, height: 5)
 
-        trendHost.frame = CGRect(x: trendX, y: 7, width: trendW, height: 21)
+        trendHost.frame = CGRect(x: trendX, y: 6, width: trendW, height: 24)
         trendFill.frame = trendHost.bounds
         trendLine.frame = trendHost.bounds
         trendDot.frame = trendHost.bounds
         paintTrend()
-        rangeLabel.font = .monospacedDigitSystemFont(ofSize: 8, weight: .medium)
-        rangeLabel.frame = CGRect(x: trendX, y: 31, width: trendW, height: 10)
-        footnote.isHidden = true
 
-        live.frame = CGRect(x: w - 12, y: 12, width: 3.5, height: 3.5)
+        rangeLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .medium)
+        rangeLabel.frame = CGRect(x: rangeX, y: 8, width: rangeW, height: 12)
+        footnote.isHidden = false
+        footnote.text = "本次范围"
+        footnote.font = .systemFont(ofSize: 7, weight: .regular)
+        footnote.frame = CGRect(x: rangeX, y: 22, width: rangeW, height: 9)
+
+        live.frame = CGRect(x: liveX, y: 12, width: 3.5, height: 3.5)
     }
 
     private var zoneProgress: CGFloat {

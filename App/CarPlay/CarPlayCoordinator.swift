@@ -753,14 +753,20 @@ final class CarPlayCoordinator: NSObject {
 
         let inset = host.view.safeAreaInsets
         if heartRail.horizontal {
-            // HD：心率条横过来贴在画面顶部，宽度固定，左右居中。它叠在车机上沿之上，
-            // 高度压到 44pt，只占一条状态栏的厚度，不挡地图和左侧车机 Dock。
-            let railWidth = min(336, bounds.width - inset.left - inset.right - 24)
-            let railHeight: CGFloat = 44
-            let railTop = inset.top + 4
+            // HD：底部黑边里，四颗操作键靠在最左；余下整条空白都留给心率胶囊。
+            // 左边距 24 + 四键总宽 242 + 12 的间隔，刚好和网页底部操作条的右缘对齐。
+            let leftInset = max(inset.left, 24)
+            let controlsWidth: CGFloat = 242
+            let railLeft = leftInset + controlsWidth + 12
+            let railRight = bounds.width - max(inset.right, 24)
+            let railHeight: CGFloat = 42
+            let railBottom = bounds.maxY - 8
+            let railWidth = max(0, railRight - railLeft)
             heartRail.bounds = CGRect(x: 0, y: 0, width: railWidth, height: railHeight)
-            heartRail.center = CGPoint(x: bounds.midX, y: railTop + railHeight / 2)
-            railAllowed = true
+            heartRail.center = CGPoint(x: railLeft + railWidth / 2,
+                                       y: railBottom - railHeight / 2)
+            // 窄到放不下区间/走势时不要硬挤，宁可先收起来。
+            railAllowed = railWidth >= 520
         } else {
             // iPhone：心率卡贴屏幕最右侧悬浮，像左边按钮一样留出边距；整张卡只在 CarPlay 舞台之外的黑边里。
             let stageFrame = stage.frame
