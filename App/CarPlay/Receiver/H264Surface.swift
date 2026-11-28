@@ -43,6 +43,9 @@ final class H264Surface: UIView {
     private var checkingDisplaySince: TimeInterval?
     /// 主线程镜像：视频像素尺寸，仅用于触控归一化与 PiP 就绪判断。
     private var videoSize: CGSize = .zero
+    /// 主线程只读取的视频像素尺寸：外层用它把原生卡片收成画面本身的宽高比，
+    /// 这样 19.5:9 / 21:9 的车机画面不会再被 16:9 的卡框硬塞出左右黑边。
+    var pictureSize: CGSize { videoSize }
     private var statFrames = 0
     private var statSkips = 0
     private var statFlushes = 0
@@ -63,7 +66,8 @@ final class H264Surface: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .black
+        // 透明底：画面比例和卡片不一致时露出来的那条，应该让网页背景透上来，而不是刷成黑边。
+        backgroundColor = .clear
         display.videoGravity = .resizeAspect
         isUserInteractionEnabled = true
         isMultipleTouchEnabled = true

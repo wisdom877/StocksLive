@@ -16,7 +16,8 @@ final class CarPlayStageView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .black
+        // 卡片底也留空：黑边一旦露出来就和待机页其它卡片对不上，透出网页背景才是一张卡。
+        backgroundColor = .clear
         layer.cornerRadius = 26
         layer.cornerCurve = .continuous
         clipsToBounds = true
@@ -54,6 +55,7 @@ final class CarPlayCoordinator: NSObject {
     private var stageGrab = false
     private var stageSettling = false
     private var stageDragOffset: CGFloat = 0
+    private var laidOutVideoSize = CGSize.zero
     private var orientationObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
     private var heartObserver: NSObjectProtocol?
@@ -373,6 +375,13 @@ final class CarPlayCoordinator: NSObject {
         guard active, !covered, !recovering else { return }
         let now = CACurrentMediaTime()
         if displayedVideo {
+            // 第一帧的像素尺寸往往比画面晚到几毫秒，这里按尺寸变化补一次布局，
+            // 让卡片从 16:9 直接收成画面本身的比例，不留黑边。
+            let pixels = stage.surface.pictureSize
+            if pixels != laidOutVideoSize, pixels != .zero {
+                laidOutVideoSize = pixels
+                relayout()
+            }
             // 每秒一行运行状态：既是验收口径，也替代必须连 Xcode 看 Console 的现状。
             push(state: "stats", message: stage.surface.statsLine())
             guard now - lastVideoAt > 8 else { return }
@@ -438,11 +447,15 @@ final class CarPlayCoordinator: NSObject {
         let bounds = host.view.bounds
         guard bounds.width > 0, bounds.height > 0 else { return }
         let short = min(bounds.width, bounds.height)
+        // 卡片跟着真实画面宽高比走：16:9 只是没拿到像素尺寸之前的默认值。
+        // 车机常见 19.5:9 / 21:9，硬塞进 16:9 就会在左右各留一条黑边。
+        let pixels = stage.surface.pictureSize
+        let aspect: CGFloat = (pixels.width > 1 && pixels.height > 1) ? pixels.width / pixels.height : 16.0 / 9.0
         var height = short
-        var width = short * 16 / 9
+        var width = height * aspect
         if width > max(bounds.width, bounds.height) {
             width = max(bounds.width, bounds.height)
-            height = width * 9 / 16
+            height = width / aspect
         }
         let rotation: CGFloat
         switch host.view.window?.windowScene?.interfaceOrientation {
