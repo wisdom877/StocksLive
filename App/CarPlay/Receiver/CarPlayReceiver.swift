@@ -52,6 +52,15 @@ final class CarPlayReceiver {
         }
     }
 
+    /// 远端 iPad 的配置可能先写 720p，而 iPhone 实际协商到 1080p；
+    /// 首帧到达后用真实像素尺寸校正触控坐标，避免画面正常但点不中。
+    func setDisplaySize(width: Int, height: Int) {
+        guard width > 1, height > 1 else { return }
+        queue.async { [weak self] in
+            self?.displaySize = (width, height)
+        }
+    }
+
     func start(configuration: ReceiverConfiguration, identity: AccessoryIdentity) {
         let listening = onListening
         queue.async { [weak self] in
@@ -115,8 +124,10 @@ final class CarPlayReceiver {
                 }
             }
             candidate.newConnectionHandler = { [weak self, weak candidate] connection in
+                // 一个 iPad 车机只服务一台 iPhone；留 2 条给新旧控制连接交替，
+                // 既不让第二台手机抢触控，也不至于重连瞬间被旧连接卡住。
                 guard let self, self.generation == generation, self.listener === candidate,
-                      self.connections.count < 8 else { connection.cancel(); return }
+                      self.connections.count < 2 else { connection.cancel(); return }
                 let id = UUID(); self.connections[id] = connection
                 let state = SessionState(credentials: self.airPlayIdentity)
                 self.sessions[id] = state

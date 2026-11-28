@@ -1,7 +1,12 @@
 # App/CarPlay · 待机页 CarPlay 接收端
 
-这是待机第 7 页「CarPlay」的原生层。它让同一台 iPhone 把自己当作无线 CarPlay 配件：
-系统把 CarPlay 画面/声音推给本 App，本 App 解码后显示在待机页，触控原路回传。
+这是待机第 7 页「CarPlay」的原生层。现在有三种角色，共用同一套接收/解码/音频/触控：
+
+- **iPhone 本机模式**（`cmd:"start"`）：原来的同机 CarPlay，iPhone 自己既是配件又是接收端。
+- **iPhone 远程主机**（`cmd:"startRemote"`）：iPhone 只跑虚拟配件探针，把 CarPlay 会话指向同一局域网的 iPad。
+- **iPad 接收端**（`cmd:"startReceiver"`）：iPad 只跑 `CarPlayReceiver`，等 iPhone 连进来，负责显示/声音/触控。
+
+远程主机的链路：iPhone 的 `SameDeviceProbe` 用 `expectsLocalControl=false`，在 `0x4300` 后向目标 iPad 的 IP/端口请求会话；视频、音频、触控仍由 iPad 本机的 `CarPlayReceiver`/`H264Surface` 处理，不需要自建 H.264 中继。
 
 上游：[xmz28/CarWithin](https://github.com/xmz28/CarWithin)（1.0.5，AGPL-3.0-only）。
 本目录是**裁剪移植**，不是子模块，也不跟随上游自动更新。

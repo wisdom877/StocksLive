@@ -62,23 +62,55 @@ struct ReceiverConfiguration {
         return value
     }
 
+    /// 本机 iPhone 的同机 CarPlay：监听地址必须是本机 Wi-Fi，且需要可用的 SSID。
     func validate() throws {
-        var parsed = in_addr()
-        guard inet_pton(AF_INET, address, &parsed) == 1,
-              Self.localIPv4Addresses().contains(address) else {
+        try validateMedia()
+        guard Self.localIPv4Addresses().contains(address) else {
             throw ConfigurationError("请先连接 Wi-Fi；CarPlay 需要一个本机局域网地址。")
-        }
-        guard (320...3840).contains(width), (320...3840).contains(height),
-              width % 2 == 0, height % 2 == 0,
-              (30...60).contains(maxFPS), maxFPS % 5 == 0,
-              (100...400).contains(widthPhysicalMM) else {
-            throw ConfigurationError("画面参数超出支持范围。")
         }
         guard !ssid.isEmpty, ssid.utf8.count <= 32 else {
             throw ConfigurationError(ssid.isEmpty ? "请填写 Wi-Fi 名称。" : "Wi-Fi 名称不能超过 32 个 UTF-8 字节。")
         }
         guard password.isEmpty || (8...63).contains(password.utf8.count) else {
             throw ConfigurationError("请输入 8–63 字节的 Wi-Fi 密码，开放网络则留空。")
+        }
+    }
+
+    /// iPad 只做接收端：只校验本机监听地址和画面参数，不要求 Wi-Fi 密码。
+    func validateReceiver() throws {
+        try validateMedia()
+        guard Self.localIPv4Addresses().contains(address) else {
+            throw ConfigurationError("请先连接 Wi-Fi；iPad 需要一个本机局域网地址。")
+        }
+    }
+
+    /// iPhone 远程主机：目标是同一局域网内另一台设备的 IPv4，端口必须合法。
+    /// 这里不再要求目标是本机地址，否则 iPhone 无法把 CarPlay 会话指向 iPad。
+    func validateRemoteTarget() throws {
+        try validateMedia()
+        try Self.validateIPv4(address)
+        guard port > 0 else { throw ConfigurationError("iPad 监听端口无效。") }
+        guard ssid.utf8.count <= 32 else {
+            throw ConfigurationError("Wi-Fi 名称不能超过 32 个 UTF-8 字节。")
+        }
+        guard password.isEmpty || (8...63).contains(password.utf8.count) else {
+            throw ConfigurationError("请输入 8–63 字节的 Wi-Fi 密码，开放网络则留空。")
+        }
+    }
+
+    static func validateIPv4(_ value: String) throws {
+        var parsed = in_addr()
+        guard inet_pton(AF_INET, value, &parsed) == 1 else {
+            throw ConfigurationError("请输入有效的 iPad IPv4 地址。")
+        }
+    }
+
+    private func validateMedia() throws {
+        guard (320...3840).contains(width), (320...3840).contains(height),
+              width % 2 == 0, height % 2 == 0,
+              (30...60).contains(maxFPS), maxFPS % 5 == 0,
+              (100...400).contains(widthPhysicalMM) else {
+            throw ConfigurationError("画面参数超出支持范围。")
         }
     }
 }

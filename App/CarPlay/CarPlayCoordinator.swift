@@ -36,6 +36,12 @@ final class CarPlayStageView: UIView {
 
 /// 只在前台使用：进入待机第 7 页才启动，离开页面 / 进后台 / 锁屏即停止。
 final class CarPlayCoordinator: NSObject {
+    private enum Role {
+        case local
+        case remoteHost
+        case receiver
+    }
+
     private weak var host: UIViewController?
     private weak var webView: WKWebView?
     private let receiver = CarPlayReceiver()
@@ -44,9 +50,13 @@ final class CarPlayCoordinator: NSObject {
     private let heartRail = HeartRateRailView()
     private let ssidReader = WiFiSSIDReader()
     private let closeButton = UIButton(type: .system)
+    private var role: Role = .local
+    private var remoteTarget: (host: String, port: UInt16)?
+    private var remoteTargetName = "iPad"
     private var active = false
     private var resolvingSSID = false
     private var displayedVideo = false
+    private var controlConnected = false
     private var railAllowed = false
     /// 网页可以整条关掉右侧心率栏：出画面时右侧只留画面，不再挂心率胶囊。
     private var railShow = true
@@ -58,6 +68,7 @@ final class CarPlayCoordinator: NSObject {
     private var stageSettling = false
     private var stageDragOffset: CGFloat = 0
     private var laidOutVideoSize = CGSize.zero
+    private var touchVideoSize = CGSize.zero
     private var orientationObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
     private var heartObserver: NSObjectProtocol?
@@ -101,24 +112,34 @@ final class CarPlayCoordinator: NSObject {
     func handle(_ body: [String: Any]) {
         switch body["cmd"] as? String {
         case "start":
-            // 网页设置页把分辨率 / 帧率 / 编码 / 音频带在这里；先落盘，再启动。
+            // 原来的同机 CarPlay，保留给 iPhone 本机显示；网页默认会走 startRemote。
+            role = .local
             saveReceiverConfig(body)
             recovering = false; recoveryCount = 0; lastRecoveryAt = 0
             let ssid = (body["ssid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let password = body["password"] as? String
             start(ssid: ssid, password: password)
+        case "startRemote":
+            // iPhone 只做虚拟配件探针，目标指向同一局域网内的 iPad。
+            role = .remoteHost
+            saveReceiverConfig(body)
+            remoteTarget = parseRemoteTarget(body)
+            if let name = body["targetName"] as? String, !name.isEmpty { remoteTargetName = name }
+            recovering = false; recoveryCount = 0; lastRecoveryAt = 0
+            let ssid = (body["ssid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let password = body["password"] as? String
+            startRemote(ssid: ssid, password: password)
+        case "startReceiver":
+            // iPad 只做接收端，不启动本机探针。
+            role = .receiver
+            saveReceiverConfig(body)
+            recovering = false; recoveryCount = 0; lastRecoveryAt = 0
+            startReceiver()
         case "config":
             saveReceiverConfig(body)
         case "restart":
             // 画面参数只能在会话建立前生效：停掉当前会话，再用新配置重新握手。
-            recovering = false; recoveryCount = 0; lastRecoveryAt = 0
-            let ssid = lastSSID
-            var password: String? = nil
-            if let ssid, let saved = try? WiFiCredentials.password(for: ssid) { password = saved }
-            stop(reason: nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                self?.start(ssid: ssid, password: password)
-            }
+            restartCurrent()
         case "stop":
             stop(reason: nil)
         case "forget":
@@ -244,16 +265,24 @@ final class CarPlayCoordinator: NSObject {
         push(state: "credentials", message: note, extra: ["ssid": name, "wifi": hasWiFi])
     }
 
-    private func begin(ssid: String, password: String) {
-        guard let host else { return }
-        guard let address = ReceiverConfiguration.wifiIPv4Address() else {
-            push(state: "failed", message: "请先连接 Wi-Fi；CarPlay 需要一个本机局域网地址。")
-            return
+    // MARK: - 角色
+    //
+    // local：原来的同机 CarPlay，iPhone 自己既是配件又是接收端。
+    // remoteHost：iPhone 只跑虚拟配件探针，把 CarPlay 会话指向同一局域网的 iPad。
+    // receiver：iPad 只跑接收端，等 iPhone 连进来。
+    //
+    // 三条链路共用同一个 CarPlayReceiver / H264Surface，视频、音频、触控不重写。
+
+    private var roleName: String {
+        switch role {
+        case .local: return "local"
+        case .remoteHost: return "host"
+        case .receiver: return "receiver"
         }
-        guard let identity = try? AccessoryIdentityStore.loadFromBundle() else {
-            push(state: "failed", message: "配件身份缺失：请确认 App/CarPlay/Identity 已随包打入")
-            return
-        }
+    }
+
+    private func makeConfiguration(address: String, ssid: String, password: String,
+                                   port: UInt16, name: String) -> ReceiverConfiguration {
         let deviceID = ReceiverConfiguration.persistentDeviceID()
         // 分辨率 / 帧率 / 编码 / 音频来自设置页；没有设置过就保持原来的 1280×720@30 H.264。
         var width = savedInt("cpWidth", 1280)
@@ -269,7 +298,230 @@ final class CarPlayCoordinator: NSObject {
                                            maxFPS: (30...60).contains(fps) ? fps : 30,
                                            videoCodec: codec,
                                            audioEnabled: audio, widthPhysicalMM: 200,
-                                           oemIconPNG: nil, oemIconLabel: "黄杨工作台", deviceID: deviceID)
+                                           oemIconPNG: nil, oemIconLabel: "黄杨工作台",
+                                           deviceID: deviceID)
+        config.port = port
+        config.name = name
+        return config
+    }
+
+    private func parseRemoteTarget(_ body: [String: Any]) -> (host: String, port: UInt16)? {
+        let rawHost = (body["target"] as? String) ?? (body["host"] as? String)
+        guard let rawHost else { return nil }
+        let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { return nil }
+        let rawPort = body["port"] as? Int ?? 7000
+        guard (1...65535).contains(rawPort) else { return nil }
+        return (host: host, port: UInt16(rawPort))
+    }
+
+    private func startRemote(ssid: String?, password: String?) {
+        guard !active, !resolvingSSID else { return }
+        guard let target = remoteTarget else {
+            push(state: "failed", message: "请先填写 iPad 的局域网地址。")
+            return
+        }
+        if !recovering { recoveryCount = 0; lastRecoveryAt = 0 }
+        if let ssid, !ssid.isEmpty {
+            beginRemote(target: target, ssid: ssid, password: password ?? "")
+            return
+        }
+        if let saved = lastSSID {
+            let stored = (try? WiFiCredentials.password(for: saved)) ?? nil
+            beginRemote(target: target, ssid: saved, password: stored ?? "")
+            return
+        }
+        resolvingSSID = true
+        push(state: "starting", message: "正在读取当前 Wi-Fi…")
+        ssidReader.currentSSID { [weak self] name in
+            guard let self, self.resolvingSSID else { return }
+            self.resolvingSSID = false
+            guard !self.active else { return }
+            self.requestCredentials(ssid: name)
+        }
+    }
+
+    private func startReceiver() {
+        guard !active, !resolvingSSID else { return }
+        if !recovering { recoveryCount = 0; lastRecoveryAt = 0 }
+        beginReceiver()
+    }
+
+    private func restartCurrent(resetRecovery: Bool = true) {
+        if resetRecovery { recovering = false; recoveryCount = 0; lastRecoveryAt = 0 }
+        let ssid = lastSSID
+        var password: String? = nil
+        if let ssid, let saved = try? WiFiCredentials.password(for: ssid) { password = saved }
+        let target = remoteTarget
+        let oldRole = role
+        stop(reason: nil, keepRecovery: !resetRecovery)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self else { return }
+            switch oldRole {
+            case .local:
+                self.start(ssid: ssid, password: password)
+            case .remoteHost:
+                self.remoteTarget = target
+                self.role = .remoteHost
+                self.startRemote(ssid: ssid, password: password)
+            case .receiver:
+                self.role = .receiver
+                self.startReceiver()
+            }
+        }
+    }
+
+    private func beginRemote(target: (host: String, port: UInt16), ssid: String, password: String) {
+        guard let address = ReceiverConfiguration.wifiIPv4Address() else {
+            push(state: "failed", message: "请先连接 Wi-Fi；iPhone 需要一个局域网地址。")
+            return
+        }
+        guard let identity = try? AccessoryIdentityStore.loadFromBundle() else {
+            push(state: "failed", message: "配件身份缺失：请确认 App/CarPlay/Identity 已随包打入")
+            return
+        }
+        let config = makeConfiguration(address: target.host, ssid: ssid, password: password,
+                                       port: target.port, name: remoteTargetName)
+        do { try config.validateRemoteTarget() } catch {
+            push(state: "failed", message: error.localizedDescription)
+            return
+        }
+        _ = address   // 只用来确认本机确实在局域网上；目标地址来自网页。
+        if !ssid.isEmpty {
+            UserDefaults.standard.set(ssid, forKey: Self.ssidKey)
+            lastSSID = ssid
+            try? WiFiCredentials.save(password, for: ssid)
+        }
+
+        active = true
+        displayedVideo = false
+        controlConnected = false
+        covered = false
+        recovering = false
+        lastVideoAt = CACurrentMediaTime()
+        videoStartAt = lastVideoAt
+        stage.surface.reset()
+        stage.isHidden = true
+        heartRail.isHidden = true
+        closeButton.isHidden = true
+
+        // 远程主机不显示本机画面；这里不把 stage 加进视图，避免黑色空窗盖住网页提示。
+        push(state: "caps", message: "stage")
+        push(state: "starting", message: "正在创建虚拟配件端点…", extra: ["target": target.host, "port": Int(target.port)])
+
+        probe.onLog = { [weak self] line in self?.log(line) }
+        probe.onStage = { [weak self] message in
+            self?.push(state: "auth", message: message)
+        }
+        probe.onFinished = { [weak self] message in
+            self?.stop(reason: message, state: "failed")
+        }
+        // 先回等待态，再起探针：探针若同步失败会推 failed，不能被后面的 waiting 覆盖。
+        push(state: "waiting",
+             message: "已向 \(remoteTargetName)（\(target.host):\(target.port)）请求 CarPlay，等待 iPad 连接…",
+             extra: ["target": target.host, "port": Int(target.port)])
+        probe.start(configuration: config, identity: identity, expectsLocalControl: false)
+    }
+
+    private func beginReceiver() {
+        guard let host else { return }
+        guard let address = ReceiverConfiguration.wifiIPv4Address() else {
+            push(state: "failed", message: "请先连接 Wi-Fi；iPad 需要一个本机局域网地址。")
+            return
+        }
+        guard let identity = try? AccessoryIdentityStore.loadFromBundle() else {
+            push(state: "failed", message: "配件身份缺失：请确认 App/CarPlay/Identity 已随包打入")
+            return
+        }
+        let ssid = lastSSID ?? "CarPlay"
+        let password = (try? WiFiCredentials.password(for: ssid)) ?? ""
+        let config = makeConfiguration(address: address, ssid: ssid, password: password,
+                                       port: 7000, name: "黄杨工作台")
+        do { try config.validateReceiver() } catch {
+            push(state: "failed", message: error.localizedDescription)
+            return
+        }
+
+        active = true
+        displayedVideo = false
+        controlConnected = false
+        covered = false
+        recovering = false
+        lastVideoAt = CACurrentMediaTime()
+        videoStartAt = lastVideoAt
+        stage.surface.frameRate = Double(config.maxFPS)
+        stage.surface.reset()
+        stage.isHidden = true
+        heartRail.isHidden = true
+        closeButton.isHidden = true
+        host.view.addSubview(stage)
+        host.view.addSubview(heartRail)
+        host.view.addSubview(closeButton)
+        relayout()
+        push(state: "caps", message: "stage")
+        push(state: "starting", message: "正在启动 iPad 接收端…")
+
+        receiver.onLog = { [weak self] line in self?.log(line) }
+        receiver.onFailure = { [weak self] message in
+            self?.stop(reason: message, state: "failed")
+        }
+        receiver.onControlConnected = { [weak self] in
+            self?.controlConnected = true
+            self?.videoStartAt = CACurrentMediaTime()
+            self?.push(state: "ready", message: "iPhone 已连接，正在协商画面…")
+        }
+        receiver.onVideoClosed = { [weak self] in self?.videoDidClose("视频通道已关闭") }
+        receiver.onVideoStalled = { [weak self] reason in self?.videoDidClose(reason) }
+        receiver.onVideo = { [weak self] data, codec in
+            guard let self, self.active else { return }
+            do {
+                try self.stage.surface.enqueue(accessUnit: data, codec: codec)
+                self.lastVideoAt = CACurrentMediaTime()
+                let pixels = self.stage.surface.pictureSize
+                if pixels.width > 1, pixels.height > 1, pixels != self.touchVideoSize {
+                    self.touchVideoSize = pixels
+                    self.receiver.setDisplaySize(width: Int(pixels.width), height: Int(pixels.height))
+                }
+                if !self.displayedVideo {
+                    self.displayedVideo = true
+                    self.stage.isHidden = self.covered
+                    self.closeButton.isHidden = true
+                    self.heartRail.refresh()
+                    self.relayout()
+                    self.push(state: "video", message: "CarPlay 画面已就绪")
+                }
+            } catch {
+                self.log("视频显示失败：\(error.localizedDescription)")
+                self.receiver.requestKeyFrame(reason: "视频显示失败")
+            }
+        }
+        stage.surface.onLog = { [weak self] in self?.log($0) }
+        stage.surface.onKeyframeNeeded = { [weak self] reason in self?.receiver.requestKeyFrame(reason: reason) }
+        stage.surface.onTouches = { [weak self] points in self?.receiver.touches(source: "local", points) }
+
+        receiver.onListening = { [weak self] port in
+            guard let self, self.active else { return }
+            self.push(state: "listening",
+                      message: "等待 iPhone 连接 · \(address):\(port)",
+                      extra: ["ip": address, "port": Int(port)])
+        }
+        receiver.start(configuration: config, identity: identity)
+        startVideoHealthTimer()
+    }
+
+    private func begin(ssid: String, password: String) {
+        role = .local
+        guard let host else { return }
+        guard let address = ReceiverConfiguration.wifiIPv4Address() else {
+            push(state: "failed", message: "请先连接 Wi-Fi；CarPlay 需要一个本机局域网地址。")
+            return
+        }
+        guard let identity = try? AccessoryIdentityStore.loadFromBundle() else {
+            push(state: "failed", message: "配件身份缺失：请确认 App/CarPlay/Identity 已随包打入")
+            return
+        }
+        let config = makeConfiguration(address: address, ssid: ssid, password: password,
+                                       port: 7000, name: "黄杨工作台")
         do { try config.validate() } catch {
             push(state: "failed", message: error.localizedDescription)
             return
@@ -281,6 +533,7 @@ final class CarPlayCoordinator: NSObject {
 
         active = true
         displayedVideo = false
+        controlConnected = false
         covered = false
         recovering = false
         lastVideoAt = CACurrentMediaTime()
@@ -304,6 +557,8 @@ final class CarPlayCoordinator: NSObject {
             self?.stop(reason: message, state: "failed")
         }
         receiver.onControlConnected = { [weak self] in
+            self?.controlConnected = true
+            self?.videoStartAt = CACurrentMediaTime()
             self?.push(state: "ready", message: "已连接，正在协商画面…")
             self?.probe.didConnectControl()
         }
@@ -353,12 +608,15 @@ final class CarPlayCoordinator: NSObject {
         resolvingSSID = false
         active = false
         displayedVideo = false
+        controlConnected = false
         covered = false
         if !keepRecovery { recovering = false }
         videoHealthTimer?.invalidate(); videoHealthTimer = nil
         probe.stop()
         receiver.stop()
         stage.surface.reset()
+        touchVideoSize = .zero
+        laidOutVideoSize = .zero
         stage.removeFromSuperview()
         heartRail.isHidden = true
         heartRail.removeFromSuperview()
@@ -379,6 +637,9 @@ final class CarPlayCoordinator: NSObject {
 
     private func checkVideoHealth() {
         guard active, !covered, !recovering else { return }
+        // 接收端还在等 iPhone 连入时没有控制连接，不能按“20 秒没画面”去重连，
+        // 否则会每 20 秒重启一次监听，永远等不到第一台手机。
+        guard role != .remoteHost, controlConnected || displayedVideo else { return }
         let now = CACurrentMediaTime()
         if displayedVideo {
             // 第一帧的像素尺寸往往比画面晚到几毫秒，这里按尺寸变化补一次布局，
@@ -387,6 +648,10 @@ final class CarPlayCoordinator: NSObject {
             if pixels != laidOutVideoSize, pixels != .zero {
                 laidOutVideoSize = pixels
                 relayout()
+                if role == .receiver, pixels != touchVideoSize {
+                    touchVideoSize = pixels
+                    receiver.setDisplaySize(width: Int(pixels.width), height: Int(pixels.height))
+                }
             }
             // 每秒一行运行状态：既是验收口径，也替代必须连 Xcode 看 Console 的现状。
             push(state: "stats", message: stage.surface.statsLine())
@@ -405,6 +670,8 @@ final class CarPlayCoordinator: NSObject {
 
     private func requestRecovery(_ reason: String) {
         guard active, !recovering else { return }
+        // 远程主机没有本机画面，不能走“画面中断就重连”的接收端 watchdog。
+        guard role != .remoteHost else { return }
         let now = CACurrentMediaTime()
         if now - lastRecoveryAt > 60 { recoveryCount = 0 }
         guard recoveryCount < 3 else {
@@ -415,13 +682,10 @@ final class CarPlayCoordinator: NSObject {
         lastRecoveryAt = now
         recovering = true
         log("正在自动重连 CarPlay（第 \(recoveryCount) 次）：\(reason)")
-        let ssid = lastSSID
-        var password: String? = nil
-        if let ssid, let saved = try? WiFiCredentials.password(for: ssid) { password = saved }
         stop(reason: "画面中断，正在重连", state: "starting", keepRecovery: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self, !self.active, self.recovering else { return }
-            self.start(ssid: ssid, password: password)
+            self.restartCurrent(resetRecovery: false)
         }
     }
 
@@ -449,7 +713,8 @@ final class CarPlayCoordinator: NSObject {
     @objc private func closeTapped() { stop(reason: "已停止 CarPlay") }
 
     func relayout() {
-        guard active, let host else { return }
+        // 远程主机没有本机舞台；不要在一张没加进视图的 stage 上量坐标。
+        guard active, let host, stage.superview != nil else { return }
         let bounds = host.view.bounds
         guard bounds.width > 0, bounds.height > 0 else { return }
         let short = min(bounds.width, bounds.height)
@@ -555,6 +820,7 @@ final class CarPlayCoordinator: NSObject {
         var payload = extra
         payload["state"] = state
         payload["msg"] = message
+        payload["role"] = roleName
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
         let js = "window.wkCarPlayState && window.wkCarPlayState(\(json));"
