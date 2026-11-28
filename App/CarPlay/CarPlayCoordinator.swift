@@ -515,6 +515,7 @@ final class CarPlayCoordinator: NSObject {
         // 远程主机不显示本机画面；这里不把 stage 加进视图，避免黑色空窗盖住网页提示。
         push(state: "caps", message: "stage")
         push(state: "starting", message: "正在创建虚拟配件端点…", extra: ["target": target.host, "port": Int(target.port)])
+        log("会话开始 role=remoteHost target=\(target.host):\(target.port)")
 
         probe.onLog = { [weak self] line in self?.log(line) }
         probe.onStage = { [weak self] message in
@@ -578,6 +579,7 @@ final class CarPlayCoordinator: NSObject {
         relayout()
         push(state: "caps", message: "stage")
         push(state: "starting", message: "正在启动 iPad 接收端…")
+        log("会话开始 role=receiver 监听端口 7000")
 
         receiver.onLog = { [weak self] line in self?.log(line) }
         receiver.onFailure = { [weak self] message in
@@ -759,6 +761,8 @@ final class CarPlayCoordinator: NSObject {
 
     private func stop(reason: String?, state: String = "idle", keepRecovery: Bool = false) {
         guard active || !stage.isHidden || resolvingSSID else { return }
+        // 收会话前先把这一轮日志发出去：断开之后再发就没上下文了。
+        CarPlayLog.shared.upload(webView: webView, reason: "stop:\(reason ?? "-")")
         resolvingSSID = false
         active = false
         syncCarPlayKeepAlive()
@@ -998,6 +1002,8 @@ final class CarPlayCoordinator: NSObject {
 
     private func log(_ line: String) {
         NSLog("[CarPlay] %@", line)
+        // 同时进诊断环形缓冲：真机出问题时，服务器 logs/carplay/ 才拿得到当时发生了什么。
+        CarPlayLog.shared.record(line)
         // 日志不逐条推到网页，避免连接过程里刷屏；只看最后一条错误。
     }
 
@@ -1107,6 +1113,10 @@ final class CarPlayCoordinator: NSObject {
 
     private func push(state: String, message: String, extra: [String: Any] = [:]) {
         guard let webView else { return }
+        // 每秒一行的 stats 不进诊断缓冲，否则 200 条环形会被读数刷满
+        if state != "stats" {
+            CarPlayLog.shared.record("state=\(state) role=\(roleName) msg=\(message)")
+        }
         var payload = extra
         payload["state"] = state
         payload["msg"] = message
