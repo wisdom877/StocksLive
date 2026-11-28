@@ -752,17 +752,25 @@ html.wk-hd #sb .sb-wo-r{height:100%}
   background:linear-gradient(180deg, var(--gls-card-hi) 0%, var(--gls-card-lo) 82%, transparent 100%);
   -webkit-backdrop-filter:var(--gls-f);backdrop-filter:var(--gls-f);
 }
+/* v37：非待机弹层的头部不再铺整幅背板。原来这里给了 .sheet-head 一层渐变 + 整幅 backdrop-filter，
+   在 iPad 上标题和关闭胶囊后面就挂着一块雾蒙蒙的白板；iPhone 的 .sheet-head 一直是 background:none，
+   这里跟手机对齐：透明、不跑滤镜，只留两枚胶囊自己带玻璃。
+   （待机那几层在文件末 v35 段另有一次 !important 覆盖，与这里不冲突。） */
 html.wk-hd .sheet-head{
-  background:linear-gradient(180deg, var(--gls-card-hi) 0%, var(--gls-card-lo) 86%, transparent 100%);
-  -webkit-backdrop-filter:var(--gls-f);backdrop-filter:var(--gls-f);
+  background:none;
+  -webkit-backdrop-filter:none;backdrop-filter:none;
 }
+/* v37：详情/图表/趋势这类「标题 + 分段条」两级吸顶，也不再铺整幅背板。
+   原来分段条连同它上方 64px 补片是一整块卡片色 + 模糊，量出来的位置正好压在标题胶囊背后
+   （head 92–146，补片 84–148），iPad 上就是标题后面那层雾板。
+   现在两处都归零：分段条只保留自己的分段控件胶囊，滚动内容从标题胶囊和分段条后面穿过去。 */
 html.wk-hd .stock-tabs-wrap{
-  background:linear-gradient(180deg, var(--gls-card-hi), var(--gls-card-lo));
-  -webkit-backdrop-filter:var(--gls-f);backdrop-filter:var(--gls-f);
+  background:none;
+  -webkit-backdrop-filter:none;backdrop-filter:none;
 }
 html.wk-hd .sheet-body:has(.stock-tabs-wrap) .stock-tabs-wrap::before{
-  background:linear-gradient(180deg, var(--gls-card-hi), var(--gls-card-lo));
-  -webkit-backdrop-filter:var(--gls-f);backdrop-filter:var(--gls-f);
+  background:none;
+  -webkit-backdrop-filter:none;backdrop-filter:none;
 }
 
 /* v15：体能页回到整屏高度，卡片用明确高度，内部统计不再被页面 padding 挤出去 */

@@ -21,9 +21,10 @@ document.documentElement.setAttribute("data-theme",d?"dark":"light");})();</scri
 <script>/* 玻璃档位先落属性：首帧就用用户选的档，不留一遍默认档的白闪 */
 try{var g=localStorage.getItem("sbGlass");if(g)document.documentElement.setAttribute("data-glass",g)}catch(e){}</script>
 <script>/* HD 壳在文档开始前注入 window.wkHD；iPhone 不注入，下面整段不会执行，也不会加载 HD 样式 */if(window.wkHD){document.documentElement.classList.add("wk-hd");}</script>
-<link rel="stylesheet" href="static/style.css?v=16e8fc38ff">
-<link rel="stylesheet" href="static/glass.css?v=77aadbb3f2">
-<script>if(window.wkHD){document.write('<link rel="stylesheet" href="static/style-hd.css?v=52">');}</script>
+<link rel="stylesheet" href="static/style.css?v=472f323721">
+<link rel="stylesheet" href="static/glass.css?v=8251065301">
+<!-- HD 样式也用内容摘要做缓存键，改 style-hd.css 后必须同步改这里的 v -->
+<script>if(window.wkHD){document.write('<link rel="stylesheet" href="static/style-hd.css?v=708645e7a3">');}</script>
 </head>
 <body>
 <script>

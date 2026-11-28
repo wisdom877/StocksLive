@@ -88,11 +88,16 @@ final class CarPlayCoordinator: NSObject {
     private var heartObserver: NSObjectProtocol?
     private var lastSSID: String?
     private var videoHealthTimer: Timer?
+    private var logFlushTimer: Timer?
     private var lastVideoAt: CFTimeInterval = 0
+    private var lastVideoStallLogAt: CFTimeInterval = 0
     private var videoStartAt: CFTimeInterval = 0
     private var lastRecoveryAt: CFTimeInterval = 0
     private var recoveryCount = 0
     private var recovering = false
+    /// 后台态：iPhone 侧靠保活继续守会话；iPad 侧只守控制连接、不按「无帧」拆，
+    /// 回前台再 requestKeyFrame 补帧。
+    private var isBackground = false
     var onIdleAudio: (() -> Void)?
 
     private static let ssidKey = "carplaySSID"
@@ -112,8 +117,11 @@ final class CarPlayCoordinator: NSObject {
         backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification,
             object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
-            if self.active, self.role == .remoteHost {
-                self.log("App 进入后台：远程主机保持连接")
+            self.isBackground = true
+            // 两端都保持会话：iPhone 靠 audio 保活继续守；iPad 接收端只守控制连接，
+            // 停在这里的话，iPhone 那头永远等不到重连的对手，只能人工长按。
+            if self.active {
+                self.log("App 进入后台：CarPlay 会话保持（\(self.roleName)）")
                 return
             }
             self.stop(reason: "已进入后台，CarPlay 已停止")
@@ -462,9 +470,9 @@ final class CarPlayCoordinator: NSObject {
     }
 
     private func syncCarPlayKeepAlive() {
-        // 只有 iPhone → iPad 的远程主机需要后台存活；本机显示和 iPad 接收端
-        // 都依赖屏幕/前台，退后台本来就该停。
-        (host as? WebViewController)?.setCarPlayKeepAlive(active && role == .remoteHost)
+        // iPhone 远程主机与 iPad 接收端都要后台存活：任何一头一进后台就被挂起，
+        // 另一端就只能干等、最后靠人工长按。本机显示仍只在前台跑。
+        (host as? WebViewController)?.setCarPlayKeepAlive(active && (role == .remoteHost || role == .receiver))
     }
 
     private func beginRemote(target: (host: String, port: UInt16), ssid: String, password: String,
@@ -513,6 +521,7 @@ final class CarPlayCoordinator: NSObject {
         closeButton.isHidden = true
 
         // 远程主机不显示本机画面；这里不把 stage 加进视图，避免黑色空窗盖住网页提示。
+        startLogFlush()
         push(state: "caps", message: "stage")
         push(state: "starting", message: "正在创建虚拟配件端点…", extra: ["target": target.host, "port": Int(target.port)])
         log("会话开始 role=remoteHost target=\(target.host):\(target.port)")
@@ -568,6 +577,7 @@ final class CarPlayCoordinator: NSObject {
         recovering = false
         lastVideoAt = CACurrentMediaTime()
         videoStartAt = lastVideoAt
+        startLogFlush()
         stage.surface.frameRate = Double(config.maxFPS)
         stage.surface.reset()
         stage.isHidden = true
@@ -601,6 +611,12 @@ final class CarPlayCoordinator: NSObject {
         receiver.onVideoStalled = { [weak self] reason in self?.videoDidClose(reason) }
         receiver.onVideo = { [weak self] data, codec in
             guard let self, self.active else { return }
+            if self.isBackground {
+                // 后台不解码不渲染：只记「流还活着」，回前台靠 requestKeyFrame 补一帧。
+                // 少这一路 30fps 解码，后台保活才不至于把 iPad 烤热。
+                self.lastVideoAt = CACurrentMediaTime()
+                return
+            }
             do {
                 try self.stage.surface.enqueue(accessUnit: data, codec: codec)
                 self.lastVideoAt = CACurrentMediaTime()
@@ -668,6 +684,7 @@ final class CarPlayCoordinator: NSObject {
         recovering = false
         lastVideoAt = CACurrentMediaTime()
         videoStartAt = lastVideoAt
+        startLogFlush()
         stage.surface.frameRate = Double(config.maxFPS)
         stage.surface.reset()
         stage.isHidden = true
@@ -697,6 +714,12 @@ final class CarPlayCoordinator: NSObject {
         receiver.onVideoStalled = { [weak self] reason in self?.videoDidClose(reason) }
         receiver.onVideo = { [weak self] data, codec in
             guard let self, self.active else { return }
+            if self.isBackground {
+                // 后台不解码不渲染：只记「流还活着」，回前台靠 requestKeyFrame 补一帧。
+                // 少这一路 30fps 解码，后台保活才不至于把 iPad 烤热。
+                self.lastVideoAt = CACurrentMediaTime()
+                return
+            }
             do {
                 try self.stage.surface.enqueue(accessUnit: data, codec: codec)
                 self.lastVideoAt = CACurrentMediaTime()
@@ -750,6 +773,11 @@ final class CarPlayCoordinator: NSObject {
             guard let self else { return }
             if command == "stop" {
                 self.stop(reason: "iPhone 已切换到本机显示")
+            } else if command == "recover" {
+                // iPhone 判定会话已死，要的是「立刻重建」而不是「下线歇着」：
+                // 本地 0.4 秒重启监听，不再等网页那条 3~4 秒的退避。
+                self.log("iPhone 请求重建会话，立即重启接收端")
+                self.startReceiver()
             }
         }
         do { try control.start(port: RemoteControlPacket.port) }
@@ -773,6 +801,7 @@ final class CarPlayCoordinator: NSObject {
         covered = false
         if !keepRecovery { recovering = false }
         videoHealthTimer?.invalidate(); videoHealthTimer = nil
+        logFlushTimer?.invalidate(); logFlushTimer = nil
         remoteStatusBeacon?.update("disconnected")
         remoteStatusBeacon?.stop(); remoteStatusBeacon = nil
         remoteStatusListener?.stop(); remoteStatusListener = nil
@@ -792,9 +821,22 @@ final class CarPlayCoordinator: NSObject {
         push(state: state, message: reason ?? "CarPlay 已停止")
     }
 
+    /// iPhone 远程主机常年不 stop，日志只在收会话时才上传，等于对端永远没有记录。
+    /// 每 5 分钟补传一次环形缓冲（CarPlayLog 内部还有 60 秒节流），出问题后服务器能直接看到 iPhone 视角。
+    private func startLogFlush() {
+        logFlushTimer?.invalidate()
+        let timer = Timer(timeInterval: 300, repeats: true) { [weak self] _ in
+            guard let self, self.active else { return }
+            CarPlayLog.shared.upload(webView: self.webView, reason: "periodic")
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        logFlushTimer = timer
+    }
+
     // A frozen last frame is indistinguishable from a healthy paused picture at the
-    // UI layer. Keep a cheap 1s heartbeat and restart the whole receiver only after
-    // 8s without a decoded frame, so a Wi-Fi or keyframe stall cannot stay forever.
+    // UI layer. Keep a cheap 1s heartbeat: 8s without a frame only records a stall line,
+    // and the whole receiver is restarted only after 20s, so one short stall
+    // (lock screen / page switch / leaving standby) cannot tear the session down.
     private func startVideoHealthTimer() {
         videoHealthTimer?.invalidate()
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.checkVideoHealth() }
@@ -807,6 +849,14 @@ final class CarPlayCoordinator: NSObject {
         // 接收端还在等 iPhone 连入时没有控制连接，不能按“20 秒没画面”去重连，
         // 否则会每 20 秒重启一次监听，永远等不到第一台手机。
         guard role != .remoteHost, controlConnected || displayedVideo else { return }
+        if isBackground {
+            // 后台不渲染、也不该因为「没画面」拆会话：会话死没死看控制连接。
+            // 控制连接断了说明 iPhone 那头已经放手，收掉等下一次重连。
+            if !controlConnected {
+                requestRecovery("后台控制连接已断开")
+            }
+            return
+        }
         let now = CACurrentMediaTime()
         if displayedVideo {
             // 第一帧的像素尺寸往往比画面晚到几毫秒，这里按尺寸变化补一次布局，
@@ -822,10 +872,21 @@ final class CarPlayCoordinator: NSObject {
             }
             // 每秒一行运行状态：既是验收口径，也替代必须连 Xcode 看 Console 的现状。
             push(state: "stats", message: stage.surface.statsLine())
-            guard now - lastVideoAt > 8 else { return }
+            // 分级：3 秒无帧记一笔，8 秒仍无帧才重建。
+            // 3 秒只是「记一笔」不做动作，足够容忍切页/锁屏的瞬时停顿；
+            // 真断了就 8 秒内收掉重来，不让人对着冻屏等二十秒。
+            let stalled = now - lastVideoAt
+            guard stalled > 3 else { return }
+            if stalled <= 8 {
+                if now - lastVideoStallLogAt > 3 {
+                    lastVideoStallLogAt = now
+                    log("画面 \(Int(stalled)) 秒无新帧，等待对端补帧")
+                }
+                return
+            }
             requestRecovery("8 秒没有新画面")
-        } else if now - videoStartAt > 20 {
-            requestRecovery("启动后 20 秒没有画面")
+        } else if now - videoStartAt > 12 {
+            requestRecovery("启动后 12 秒没有画面")
         }
     }
 
@@ -1029,11 +1090,11 @@ final class CarPlayCoordinator: NSObject {
             // 不能停在 waiting，否则网页会清掉重试计时器，只能人工长按。
             lastHealthyRemoteStatus = ""
             push(state: "failed", message: "iPad 接收端已断开，正在自动重连", extra: ["remote": 1])
-            scheduleRemoteWaitRecovery(after: 8)
+            scheduleRemoteWaitRecovery(after: 2)
         case "lost":
             if previous == "connected" || previous == "video" {
                 // 心跳丢包但会话不一定断：先保持“已连接”，不清空网页的 Want，
-                // 也不把状态降级成「等待 iPad 确认」；15 秒仍无包才重建。
+                // 也不把状态降级成「等待 iPad 确认」；5 秒判丢、再 6 秒仍无包才重建。
                 log("iPad 心跳短暂丢失，保持当前连接状态")
                 push(state: "connected", message: "CarPlay 已连接 · iPad 正在显示（同步中）", extra: ["remote": 1])
                 scheduleRemoteLostRecovery()
@@ -1043,13 +1104,19 @@ final class CarPlayCoordinator: NSObject {
         case "listening", "starting", "auth", "ready", "waiting":
             // iPad 接收端重启后只会回 listening；iPhone 侧必须自己再发 requestSession，
             // 否则会一直停在“等 iPad 确认”，只能人工长按。
-            scheduleRemoteWaitRecovery(after: 12)
+            scheduleRemoteWaitRecovery(after: 5)
         default:
             break
         }
     }
 
     private func didEnterForeground() {
+        isBackground = false
+        if active, role == .receiver {
+            // 后台丢掉的帧不补发，回前台主动要一个关键帧，别让画面停在旧帧上。
+            lastVideoAt = CACurrentMediaTime()
+            receiver.requestKeyFrame(reason: "回前台补帧")
+        }
         guard active, role == .remoteHost else { return }
         remoteStatusListener?.markFresh()
         // WKWebView 在后台可能收不到 evaluateJavaScript；回前台补一次当前状态，
@@ -1060,7 +1127,7 @@ final class CarPlayCoordinator: NSObject {
     }
 
     /// iPad 的接收端 watchdog 重启后，iPhone 侧主动重发 requestSession。
-    /// 只在「还没连上/还没出画面」时生效，已连接状态由心跳和 15 秒 lost 负责。
+    /// 只在「还没连上/还没出画面」时生效，已连接状态由心跳和 5+6 秒 lost 负责。
     private func scheduleRemoteWaitRecovery(after delay: TimeInterval) {
         guard active, role == .remoteHost, !recovering else { return }
         remoteWaitWork?.cancel()
@@ -1090,14 +1157,16 @@ final class CarPlayCoordinator: NSObject {
             guard let self, self.active, self.role == .remoteHost,
                   self.lastRemoteStatus == "lost", !self.recovering else { return }
             self.log("iPad 心跳持续丢失，重建远程 CarPlay 会话")
+            // 发 recover 而不是 stop：iPad 收到后自己 0.4 秒重启接收端，
+            // 不再走「网页退避 4 秒再 startReceiver」那条慢路径。
             if let peer = self.remoteTarget?.host {
-                RemoteControlSender.send("stop", host: peer)
+                RemoteControlSender.send("recover", host: peer)
             }
             self.recovering = true
             self.stop(reason: "iPad 状态中断，正在自动重连", state: "starting", keepRecovery: true)
-            // iPad 收到 stop 后网页退避约 4 秒才重启接收端；等它重新 listen 再发探针，
+            // iPad 收到 recover 后 0.4 秒重启 listen；等它起来再发探针，
             // 否则新探针会打在一个还没起来的端口上，又白等一轮。
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
                 guard let self, !self.active, self.recovering else { return }
                 let savedSSID = self.lastSSID == "CarPlay" ? nil : self.lastSSID
                 var password: String? = nil
@@ -1108,7 +1177,9 @@ final class CarPlayCoordinator: NSObject {
             }
         }
         remoteLostWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
+        // 心跳 5 秒判 lost（对端每 2 秒一包），再留 6 秒宽限：
+        // 真断的总耗时压到 11 秒左右，又不至于被一次 UDP 抖动骗到拆会话。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: work)
     }
 
     private func push(state: String, message: String, extra: [String: Any] = [:]) {

@@ -348,7 +348,7 @@ function sbCpResume() {
 }
 
 /* 断网 / 对端先停 / 系统杀会话之后的重连：不要求人再滑回本页长按。
-   退避从 4 秒开始，最长 30 秒一次；用户主动停止或关掉自动续连就停。 */
+   退避从 3 秒起、前 8 次最长 10 秒，之后 20 秒、60 秒；用户主动停止或关掉自动续连就停。 */
 var sbCpRetryTimer = 0;
 function sbCpRetryClear() {
   clearTimeout(sbCpRetryTimer); sbCpRetryTimer = 0;
@@ -363,8 +363,9 @@ function sbCpRetryArm() {
   if (!s.on && sbCpHd()) return;
   const n = (Number(s.cpRetryN) || 0) + 1;
   s.cpRetryN = n;
-  // 前 12 次按 4–30 秒退避；之后固定 60 秒一次，对端真关机也不会把电耗光，回来还能自己接上。
-  const delay = (n > 12 ? 60 : Math.min(30, 2 + n * 2)) * 1000;
+  // 前 8 次 3–10 秒快退避（断了就别让人干等）；第 9–12 次 20 秒；之后固定 60 秒，
+  // 对端真关机也不会把电耗光，回来还能自己接上。
+  const delay = (n > 12 ? 60 : (n <= 8 ? Math.min(10, 1 + n * 2) : 20)) * 1000;
   sbCpRetryTimer = setTimeout(() => {
     sbCpRetryTimer = 0;
     const cur = sbState();
@@ -378,7 +379,8 @@ function sbCpRetryArm() {
 }
 
 /* 与待机页解耦的兜底节拍：iPhone 退出待机后没有任何页面事件会再触发重连，
-   这里每 15 秒看一眼，状态掉回 idle/failed 就交给 sbCpRetryArm 按退避重来。 */
+   这里每 4 秒看一眼：状态掉回 idle/failed 就交给 sbCpRetryArm 按退避重来；
+   卡在 starting/auth/ready/waiting 超过 15 秒也当断了处理，不在等待态里干耗。 */
 var sbCpBeatTimer = 0;
 function sbCpBeatStart() {
   if (sbCpBeatTimer) return;
@@ -386,10 +388,22 @@ function sbCpBeatStart() {
     const s = sbState();
     if (!sbCpWant() || !sbCpAutoOn() || s.cpClosing) return;
     if (document.hidden) return;                 // 后台交给原生探针，网页定时器会被系统冻结
+    const page = document.querySelector('#sb .sb-p[data-p="6"]');
+    const st = (page && page.dataset.cp) || "idle";
+    const waiting = (st === "starting" || st === "auth" || st === "ready" || st === "waiting");
+    // 等待态卡住：握手没有回调就自己收掉重来，不用等人滑回待机页按 22 秒长等。
+    if (waiting) {
+      const at = Number(page.dataset.cpat) || 0;
+      if (at && Date.now() - at > 15000) {
+        try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
+        sbCarPlaySet("failed", "连接超时，正在自动重试");
+      }
+      return;
+    }
     if (s.on && s.page === 6) return;             // 待机页正停在车机页，原有路径已接管
     if (sbCpHd()) return;                         // iPad 接收端只在待机页里有画面
     sbCpRetryArm();
-  }, 15000);
+  }, 4000);
 }
 function sbCpBeatStop() {
   clearInterval(sbCpBeatTimer); sbCpBeatTimer = 0;
@@ -408,12 +422,14 @@ function sbCpWaitArm(state) {
     // 原生探测/握手没有回调时，网页不能陪着无限等。到点主动收掉会话，再自动重来。
     try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
     sbCarPlaySet("failed", "连接超时，正在自动重试");
-  }, 22000);
+  }, 15000);
 }
 
 function sbCarPlaySet(state, message) {
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
   if (!page) return;
+  // 非 stats / caps 的状态变化都记一次进入时间：节拍靠它判断是否卡在等待态。
+  if (state !== "stats" && state !== "caps") page.dataset.cpat = String(Date.now());
   if (state === "caps") {
     sbCpCaps = {};
     (message || "").split(",").forEach((k) => { const t = k.trim(); if (t) sbCpCaps[t] = true; });

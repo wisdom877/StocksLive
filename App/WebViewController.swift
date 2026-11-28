@@ -709,7 +709,9 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             guard UIApplication.shared.applicationState == .active else { return }
             if standbyBrightness == nil { standbyBrightness = UIScreen.main.brightness }
             guard let base = standbyBrightness else { return }
-            let target = min(base, max(0.05, base * 0.28))
+            // 闲置降亮只压到原值的 12%：待机页本来就是一片糊开的底色，
+            // 再亮也只是在烧屏和烧电池，不是在看内容。
+            let target = min(base, max(0.03, base * 0.12))
             rampBrightness(to: target, duration: 0.8)
         } else {
             guard let base = standbyBrightness else { return }
