@@ -40,7 +40,7 @@ final class CarPlayReceiver {
     var onLog: ((String) -> Void)?
     var onListening: ((UInt16) -> Void)?
     var onControlConnected: (() -> Void)?
-    var onVideo: ((Data, VideoCodec, Double?) -> Void)?
+    var onVideo: ((Data, VideoCodec) -> Void)?
     var onVideoClosed: (() -> Void)?
     var onVideoStalled: ((String) -> Void)?
     var onFailure: ((String) -> Void)?
@@ -344,31 +344,27 @@ final class CarPlayReceiver {
                         self.onVideoClosed?()
                     }
                 }
-                media.onVideo = { [weak self] data, codec, streamTime in
+                media.onVideo = { [weak self] data, codec in
                     guard let self else { return }
-                    // 回调来自视频解复用队列，所有监听状态仍留在 receiver 队列上判定。
-                    self.queue.async { [weak self] in
-                        guard let self else { return }
-                        let keyframe = AnnexB.containsRandomAccess(data, codec: codec)
-                        if keyframe { self.keyframeArrived() }
-                        guard self.localVideoEnabled else { return }
-                        if self.localSkipping {
-                            guard keyframe, self.localInFlight < self.maximumLocalInFlight / 2 else { return }
-                            self.localSkipping = false
-                        } else if !keyframe, self.localLagMs() > self.localLagLimitMs {
-                            self.localSkipping = true
-                            self.requestKeyFrameOnQueue(reason: "本机显示积压")
-                            return
-                        }
-                        if self.localInFlight == 0 { self.localInFlightSince = .now() }
-                        self.localInFlight += 1
-                        DispatchQueue.main.async { [weak self] in
-                            self?.onVideo?(data, codec, streamTime)
-                            self?.queue.async { [weak self] in
-                                guard let self else { return }
-                                self.localInFlight = max(0, self.localInFlight - 1)
-                                if self.localInFlight == 0 { self.localInFlightSince = nil }
-                            }
+                    let keyframe = AnnexB.containsRandomAccess(data, codec: codec)
+                    if keyframe { self.keyframeArrived() }
+                    guard self.localVideoEnabled else { return }
+                    if self.localSkipping {
+                        guard keyframe, self.localInFlight < self.maximumLocalInFlight / 2 else { return }
+                        self.localSkipping = false
+                    } else if !keyframe, self.localLagMs() > self.localLagLimitMs {
+                        self.localSkipping = true
+                        self.requestKeyFrameOnQueue(reason: "本机显示积压")
+                        return
+                    }
+                    if self.localInFlight == 0 { self.localInFlightSince = .now() }
+                    self.localInFlight += 1
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onVideo?(data, codec)
+                        self?.queue.async { [weak self] in
+                            guard let self else { return }
+                            self.localInFlight = max(0, self.localInFlight - 1)
+                            if self.localInFlight == 0 { self.localInFlightSince = nil }
                         }
                     }
                 }

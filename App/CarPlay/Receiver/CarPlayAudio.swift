@@ -185,8 +185,7 @@ final class CarPlayAudio {
                     }
                 }
             }
-            // 画面几乎零缓冲，声音再等 180ms 就会被听成“卡”；先用 110ms 观察欠载（P1-4）。
-            let prebuffer = format.sampleRate * (format.isAAC ? 110 : 40) / 1000
+            let prebuffer = format.sampleRate * (format.isAAC ? 180 : 40) / 1000
             if buffering, queuedFrames >= prebuffer {
                 guard self.engine?.isRunning == true else {
                     // Route changes can leave player.play() on a stopped/uninitialized engine,

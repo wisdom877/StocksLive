@@ -6,8 +6,6 @@ import AVFoundation
 
 final class CarPlayMediaSession {
     private let queue: DispatchQueue
-    /// 视频解密 + 解析专用队列：和 RTSP 控制、触控上报彻底分开（P1-2）。
-    private let videoQueue = DispatchQueue(label: "StocksLive.carplay.videoDemux", qos: .userInteractive)
     private let secret: SymmetricKey
     private let peerAddress: String
     private var eventListener: MediaTCPListener?
@@ -26,7 +24,7 @@ final class CarPlayMediaSession {
     private var videoBytes = 0
     var onLog: ((String) -> Void)?
     var onBrowserAudio: ((Int, AVAudioPCMBuffer, UInt64) -> Void)?
-    var onVideo: ((Data, VideoCodec, Double?) -> Void)?
+    var onVideo: ((Data, VideoCodec) -> Void)?
     var onVideoClosed: (() -> Void)?
     init(queue: DispatchQueue, secret: SymmetricKey, peerAddress: String, audioEnabled: Bool, hevc: Bool) {
         self.queue = queue; self.secret = secret; self.peerAddress = peerAddress
@@ -71,9 +69,7 @@ final class CarPlayMediaSession {
                 }
                 guard eventListener != nil else { throw ProtocolError.malformed(CWL("初始 SETUP 前请求了屏幕流")) }
                 video?.stop(); video = nil; videoListener?.stop()
-                let stream = ScreenStream(secret: secret, connectionID: connectionID.uint64Value)
-                stream.onLog = { [weak self] line in self?.onLog?(line) }
-                screen = stream
+                screen = ScreenStream(secret: secret, connectionID: connectionID.uint64Value)
                 videoPackets = 0
                 videoBytes = 0
                 let listener = try MediaTCPListener(queue: queue, peerAddress: peerAddress); videoListener = listener
@@ -81,26 +77,17 @@ final class CarPlayMediaSession {
                     guard let self, self.video == nil else { connection.stop(); return }
                     self.video = connection; self.onLog?(CWL("视频 TCP 通道已连接"))
                     connection.onBytes = { [weak self] bytes in
-                        guard let self else { return }
-                        // 解密与解析放在 videoQueue，事件通道和触控不再等它（P1-2）。
-                        self.videoQueue.async {
-                            self.videoBytes += bytes.count
-                            do {
-                                for unit in try stream.append(bytes) {
-                                    self.videoPackets += 1
-                                    if self.videoPackets <= 2 {
-                                        self.onLog?(CWL("已解码 {1} 访问单元 {2}（{3} 字节）", [String(describing: stream.codec.displayName), String(describing: self.videoPackets), String(describing: unit.data.count)]))
-                                    }
-                                    self.onVideo?(unit.data, stream.codec, unit.streamTime)
+                        guard let self, let screen = self.screen else { return }
+                        self.videoBytes += bytes.count
+                        do {
+                            for unit in try screen.append(bytes) {
+                                self.videoPackets += 1
+                                if self.videoPackets <= 2 {
+                                    self.onLog?(CWL("已解码 {1} 访问单元 {2}（{3} 字节）", [String(describing: screen.codec.displayName), String(describing: self.videoPackets), String(describing: unit.count)]))
                                 }
-                            } catch {
-                                self.onLog?(CWL("视频数据被拒绝：{1}", [String(describing: error)]))
-                                self.queue.async { [weak self, weak connection] in
-                                    connection?.stop()
-                                    self?.onVideoClosed?()
-                                }
+                                self.onVideo?(unit, screen.codec)
                             }
-                        }
+                        } catch { self.onLog?(CWL("视频数据被拒绝：{1}", [String(describing: error)])); throw error }
                     }
                     connection.onClose = { [weak self] in
                         self?.video = nil
