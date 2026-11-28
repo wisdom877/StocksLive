@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # 一条命令产出未签名 ipa（在 macOS + Xcode 15 上跑）
-#   ./build-ipa.sh                 # iPhone，默认 Release，未签名 → build/StocksLive-unsigned.ipa
-#   ./build-ipa.sh StocksLiveHD    # iPad HD，独立 target → build/StocksLiveHD-unsigned.ipa
+#   ./build-ipa.sh                 # iPhone，默认 Release → build/StocksLive-0.0.3-b1.ipa
+#   ./build-ipa.sh StocksLiveHD    # iPad HD，独立 target → build/StocksLiveHD-0.0.3-b1.ipa
+# 版本号唯一真源：仓库根 VERSION；构建号由 BUILD_NUMBER 注入（CI 传运行号，本地默认 1）。
 set -euo pipefail
 cd "$(dirname "$0")"
 
+VER="$(tr -d '[:space:]' < VERSION)"
+if ! printf '%s' "$VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "VERSION 不合法：$VER（应为 0.0.x）" >&2
+  exit 1
+fi
+BUILD="${BUILD_NUMBER:-1}"
+case "$BUILD" in ''|*[!0-9]*) echo "BUILD_NUMBER 必须是整数：$BUILD" >&2; exit 1;; esac
+
 SCHEME="${1:-StocksLive}"
 PRODUCT="$SCHEME"
-if [ "$SCHEME" = "StocksLiveHD" ]; then
-  OUT="StocksLiveHD-unsigned"
-else
-  OUT="StocksLive-unsigned"
-fi
+OUT="${PRODUCT}-${VER}-b${BUILD}"
 
 if ! command -v xcodegen >/dev/null 2>&1; then
   echo "缺 xcodegen：先跑  brew install xcodegen" >&2
@@ -47,6 +52,8 @@ xcodebuild \
   -sdk iphoneos \
   -destination 'generic/platform=iOS' \
   -archivePath "build/$SCHEME.xcarchive" \
+  MARKETING_VERSION="$VER" \
+  CURRENT_PROJECT_VERSION="$BUILD" \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY="" \

@@ -1,0 +1,81 @@
+name: ipa
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  web-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: 前端语法检查
+        run: |
+          for f in web/static/app-*.js; do node --check "$f"; done
+
+  build:
+    needs: web-check
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读取版本真源
+        id: ver
+        run: |
+          V="$(tr -d '[:space:]' < VERSION)"
+          printf '%s' "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "VERSION 不合法：$V"; exit 1; }
+          echo "ver=$V" >> "$GITHUB_OUTPUT"
+
+      - name: 安装 xcodegen
+        run: brew install xcodegen
+
+      - name: 构建 iPhone ipa
+        env:
+          CARPLAY_CERT_B64: ${{ secrets.CARPLAY_CERT_B64 }}
+          CARPLAY_LEAF_B64: ${{ secrets.CARPLAY_LEAF_B64 }}
+          CARPLAY_KEY_B64: ${{ secrets.CARPLAY_KEY_B64 }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: ./build-ipa.sh StocksLive
+
+      - name: 构建 iPad HD ipa
+        env:
+          CARPLAY_CERT_B64: ${{ secrets.CARPLAY_CERT_B64 }}
+          CARPLAY_LEAF_B64: ${{ secrets.CARPLAY_LEAF_B64 }}
+          CARPLAY_KEY_B64: ${{ secrets.CARPLAY_KEY_B64 }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: ./build-ipa.sh StocksLiveHD
+
+      - name: 生成发布清单
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
+          BUILD: ${{ github.run_number }}
+          COMMIT: ${{ github.sha }}
+        run: python3 tools/make_manifest.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StocksLive-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}-iphone
+          path: build/StocksLive-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}.ipa
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StocksLiveHD-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}-ipad
+          path: build/StocksLiveHD-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}.ipa
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}
+          path: build/release-manifest.json
+          retention-days: 14
