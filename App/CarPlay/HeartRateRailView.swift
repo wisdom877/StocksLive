@@ -4,6 +4,11 @@ import UIKit
 /// 不再是一根高高的竖向液位柱：改成一张独立的玻璃卡，显示当前 BPM、心率区间、
 /// 近一分钟走势和本次区间，位置贴屏幕最右侧，不压 CarPlay 圆角画面。
 final class HeartRateRailView: UIView {
+    /// HD / iPad：心率卡横过来，做成贴在画面顶部的窄条；iPhone 仍保留右侧竖卡。
+    var horizontal = false {
+        didSet { if horizontal != oldValue { setNeedsLayout() } }
+    }
+
     private let glass = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
     private let tint = CAGradientLayer()
     private let sheen = CAGradientLayer()
@@ -194,6 +199,11 @@ final class HeartRateRailView: UIView {
         let w = bounds.width, h = bounds.height
         guard w > 0, h > 0 else { return }
 
+        if horizontal {
+            layoutHorizontal(width: w, height: h)
+            return
+        }
+
         let radius = min(24, w / 3)
         layer.cornerRadius = radius
         layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: radius).cgPath
@@ -230,6 +240,56 @@ final class HeartRateRailView: UIView {
 
         rangeLabel.frame = CGRect(x: pad, y: 174, width: w - pad * 2, height: 13)
         footnote.frame = CGRect(x: pad, y: 195, width: w - pad * 2, height: 12)
+    }
+
+    /// 顶部横条：左边心率/BPM，中间区间与刻度，右边 1 分钟走势和本次范围。
+    /// 高度只有 44pt，所有元素都压在一行主信息 + 一行辅助信息里。
+    private func layoutHorizontal(width w: CGFloat, height h: CGFloat) {
+        let radius = min(22, h / 2)
+        layer.cornerRadius = radius
+        layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: radius).cgPath
+        glass.frame = bounds
+        glass.layer.cornerRadius = radius
+        tint.frame = glass.contentView.bounds
+        sheen.frame = CGRect(x: 0, y: 0, width: w, height: h * 0.55)
+
+        let pad: CGFloat = 12
+        heart.frame = CGRect(x: pad, y: 13, width: 14, height: 14)
+        title.text = "心率"
+        title.font = .systemFont(ofSize: 8.5, weight: .semibold)
+        title.frame = CGRect(x: pad + 18, y: 7, width: 30, height: 10)
+
+        bpmLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
+        bpmLabel.adjustsFontSizeToFitWidth = true
+        bpmLabel.minimumScaleFactor = 0.8
+        bpmLabel.frame = CGRect(x: pad + 18, y: 17, width: 52, height: 24)
+        unitLabel.text = "BPM"
+        unitLabel.font = .systemFont(ofSize: 7.5, weight: .medium)
+        unitLabel.frame = CGRect(x: pad + 72, y: 27, width: 24, height: 9)
+
+        let zoneX = pad + 102
+        let trendW = min(72, max(48, w * 0.22))
+        let trendX = w - pad - trendW
+        zoneDot.frame = CGRect(x: zoneX, y: 15, width: 5, height: 5)
+        zoneLabel.font = .systemFont(ofSize: 8.5, weight: .semibold)
+        zoneLabel.frame = CGRect(x: zoneX + 9, y: 7, width: max(30, trendX - zoneX - 15), height: 12)
+        zonePct.isHidden = true
+        zoneTrack.frame = CGRect(x: zoneX + 9, y: 23, width: max(24, trendX - zoneX - 18), height: 2.5)
+        zoneScale.frame = zoneTrack.bounds
+        let progress = zoneProgress
+        zoneKnob.frame = CGRect(x: zoneTrack.frame.minX + progress * zoneTrack.frame.width - 2.5,
+                                y: zoneTrack.frame.minY - 1, width: 5, height: 5)
+
+        trendHost.frame = CGRect(x: trendX, y: 7, width: trendW, height: 21)
+        trendFill.frame = trendHost.bounds
+        trendLine.frame = trendHost.bounds
+        trendDot.frame = trendHost.bounds
+        paintTrend()
+        rangeLabel.font = .monospacedDigitSystemFont(ofSize: 8, weight: .medium)
+        rangeLabel.frame = CGRect(x: trendX, y: 31, width: trendW, height: 10)
+        footnote.isHidden = true
+
+        live.frame = CGRect(x: w - 12, y: 12, width: 3.5, height: 3.5)
     }
 
     private var zoneProgress: CGFloat {
@@ -292,9 +352,9 @@ final class HeartRateRailView: UIView {
 
         if samples.count >= 2 {
             let lo = samples.min() ?? 0, hi = samples.max() ?? 0
-            rangeLabel.text = "本次 \(lo)–\(hi)"
+            rangeLabel.text = horizontal ? "\(lo)–\(hi)" : "本次 \(lo)–\(hi)"
         } else {
-            rangeLabel.text = "本次 —"
+            rangeLabel.text = horizontal ? "—" : "本次 —"
         }
         rangeLabel.textColor = UIColor.white.withAlphaComponent(0.46)
         footnote.textColor = UIColor.white.withAlphaComponent(0.3)
