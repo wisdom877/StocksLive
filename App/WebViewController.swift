@@ -811,13 +811,17 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     /// 后台时播一条静音循环（audio 后台模式）→ 锁屏时页面定时器还在跑，到点能自己响铃+震动
     private func syncStandbyPlayer() {
-        guard standbyOn || carPlayKeepAlive else {
+        let want = standbyOn || carPlayKeepAlive
+        guard want else {
             standbyPlayer?.stop(); standbyPlayer = nil
             restoreAudioAfterRing()          // 关掉保活也要把会话还回 ambient，别一直挂着
             return
         }
         let bg = UIApplication.shared.applicationState == .background
-        if bg, standbyPlayer == nil, let url = Bundle.main.url(forResource: "standby", withExtension: "wav") {
+        // CarPlay 远程主机在前台就要把静音循环挂起来：等 didEnterBackground 再起播
+        // 可能已经错过系统给的执行窗口，iOS 会直接挂起进程。
+        if (bg || carPlayKeepAlive), standbyPlayer == nil,
+           let url = Bundle.main.url(forResource: "standby", withExtension: "wav") {
             if let p = try? AVAudioPlayer(contentsOf: url) {
                 // 保活音频用 mix 会话：既能在后台跑，又不会把正在听的歌压成蚊子声
                 keepAliveAudioSession()
@@ -826,7 +830,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
                 p.play()
                 standbyPlayer = p
             }
-        } else if !bg {
+        } else if !bg, !carPlayKeepAlive {
             standbyPlayer?.stop(); standbyPlayer = nil
             restoreAudioAfterRing()
         }
