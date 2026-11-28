@@ -20,7 +20,9 @@ enum RemoteStatusPacket {
     }
 }
 
-/// iPhone 端监听接收端心跳；6 秒没有任何包就报 lost。
+/// iPhone 端监听接收端心跳；12 秒没有任何包才报 lost。
+/// 心跳是 UDP，iPad 短暂卡顿、切后台或 Wi-Fi 抖一下就会丢几个包，
+/// 6 秒太短，会把仍然活着的 CarPlay 误判成「等待 iPad 确认」。
 final class RemoteStatusListener {
     private let queue = DispatchQueue(label: "StocksLive.remoteStatus.listener")
     private var listener: NWListener?
@@ -60,7 +62,7 @@ final class RemoteStatusListener {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler { [weak self] in
-            guard let self, !self.reportedLost, Date().timeIntervalSince(self.lastPacketAt) > 6 else { return }
+            guard let self, !self.reportedLost, Date().timeIntervalSince(self.lastPacketAt) > 12 else { return }
             self.reportedLost = true
             self.report("lost")
         }
@@ -88,6 +90,18 @@ final class RemoteStatusListener {
             } else {
                 self.connections.removeValue(forKey: id)
             }
+        }
+    }
+
+    /// 回前台时重新给心跳一个完整的 12 秒窗口；后台被系统冻住期间的时间差
+    /// 不能拿来判定“iPad 掉线”，否则一解锁就闪一下等待连接。
+    func markFresh() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            // 只重置判定窗口，不把旧状态再抛一次：旧状态可能刚好是 lost，
+            // 回前台补发会让远程主机误以为已经恢复并取消重建。
+            self.lastPacketAt = Date()
+            self.reportedLost = false
         }
     }
 

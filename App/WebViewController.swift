@@ -595,7 +595,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         return f.date(from: String(s.prefix(16)))
     }
 
-    private var standbyOn = false   // 默认不保活：没有用户明确打开，后台就该挂起
+    private var standbyOn = false   // 待机页自己的后台保活，默认关
+    private var carPlayKeepAlive = false   // iPhone 远程 CarPlay 在后台时也要让进程活着
     private var tonePlayer: AVAudioPlayer?
 
     /// 铃声交给原生播：Web Audio 在壳里经常被挂起（静音、没手势），原生播放最可靠
@@ -786,6 +787,14 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     private var standbyBrightness: CGFloat?
     private var brightnessRampTimer: Timer?
 
+    /// CarPlay 远程主机在后台也要保持网络会话：借 audio 后台模式播一条几乎无声的循环。
+    /// 只在 iPhone 投到 iPad 的角色打开；本机显示/iPad 接收端不沿用。
+    func setCarPlayKeepAlive(_ on: Bool) {
+        guard carPlayKeepAlive != on else { return }
+        carPlayKeepAlive = on
+        syncStandbyPlayer()
+    }
+
     @objc private func enterBackground() {
         setStandbyDim(false)          // 切后台先还原系统亮度，别把整块屏留在暗档
         syncStandbyPlayer()
@@ -802,7 +811,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     /// 后台时播一条静音循环（audio 后台模式）→ 锁屏时页面定时器还在跑，到点能自己响铃+震动
     private func syncStandbyPlayer() {
-        guard standbyOn else {
+        guard standbyOn || carPlayKeepAlive else {
             standbyPlayer?.stop(); standbyPlayer = nil
             restoreAudioAfterRing()          // 关掉保活也要把会话还回 ambient，别一直挂着
             return

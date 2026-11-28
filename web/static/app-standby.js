@@ -331,12 +331,12 @@ function sbPaintBackMode() {
 var sbCpResumeAt = 0;
 function sbCpResume() {
   const s = sbState();
-  if (!s.on || document.hidden || !sbCpWant() || s.page !== 6 || !sbCpAutoOn()) return;
+  if (!s.on || document.hidden || !sbCpWant() || !sbCpAutoOn()) return;
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
   const st = (page && page.dataset.cp) || "idle";
   // waiting / listening 也是活着的会话：最多是等对端，不能再发一条 start 把原会话顶掉。
   if (st === "video" || st === "starting" || st === "auth" || st === "ready" ||
-      st === "waiting" || st === "listening") return;
+      st === "waiting" || st === "listening" || st === "connected") return;
   if (Date.now() - sbCpResumeAt < 2600) return;
   sbCpResumeAt = Date.now();
   sbCarPlayStart();
@@ -352,14 +352,14 @@ function sbCpRetryClear() {
 function sbCpRetryArm() {
   const s = sbState();
   if (sbCpRetryTimer) return;
-  if (!s.on || document.hidden || !sbCpWant() || !sbCpAutoOn() || s.page !== 6 || s.cpClosing) return;
+  if (!s.on || document.hidden || !sbCpWant() || !sbCpAutoOn() || s.cpClosing) return;
   const n = (Number(s.cpRetryN) || 0) + 1;
   s.cpRetryN = n;
   const delay = Math.min(30, 2 + n * 2) * 1000;
   sbCpRetryTimer = setTimeout(() => {
     sbCpRetryTimer = 0;
     const cur = sbState();
-    if (!cur.on || document.hidden || !sbCpWant() || !sbCpAutoOn() || cur.page !== 6 || cur.cpClosing) return;
+    if (!cur.on || document.hidden || !sbCpWant() || !sbCpAutoOn() || cur.cpClosing) return;
     const page = document.querySelector('#sb .sb-p[data-p="6"]');
     const st = (page && page.dataset.cp) || "idle";
     if (st !== "idle" && st !== "failed") return;
@@ -375,7 +375,7 @@ function sbCpWaitArm(state) {
   sbCpWaitTimer = setTimeout(() => {
     const page = document.querySelector('#sb .sb-p[data-p="6"]');
     const st = page && page.dataset.cp;
-    if (!sbState().on || sbState().page !== 6) return;
+    if (!sbState().on) return;
     if (st !== "starting" && st !== "auth" && st !== "ready" && st !== "waiting") return;
     // 原生探测/握手没有回调时，网页不能陪着无限等。到点主动收掉会话，再自动重来。
     try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
@@ -606,7 +606,7 @@ function sbCarPlayStart() {
     try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
     sbCarPlaySet("idle", "");
     setTimeout(() => {
-      if (sbState().on && sbState().page === 6) sbCarPlayStartNow();
+      if (sbState().on) sbCarPlayStartNow();
     }, 360);
     return;
   }

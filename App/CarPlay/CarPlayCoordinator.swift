@@ -34,7 +34,9 @@ final class CarPlayStageView: UIView {
     }
 }
 
-/// 只在前台使用：进入待机第 7 页才启动，离开页面 / 进后台 / 锁屏即停止。
+/// iPhone 投到 iPad 时要允许退到后台：远程主机只跑虚拟配件探针，
+/// 前台画面在 iPad 上，iPhone 的会话要靠静音音频保活继续维持。
+/// 本机显示和 iPad 接收端仍按前台使用，进后台即停止。
 final class CarPlayCoordinator: NSObject {
     private enum Role {
         case local
@@ -57,6 +59,9 @@ final class CarPlayCoordinator: NSObject {
     private var remoteStatusBeacon: RemoteStatusBeacon?
     private var remoteControlListener: RemoteControlListener?
     private var localStallRetries = 0
+    private var remoteLostWork: DispatchWorkItem?
+    private var lastHealthyRemoteStatus = ""
+    private var foregroundObserver: NSObjectProtocol?
     private var lastRemoteStatus = ""
     private var active = false
     private var resolvingSSID = false
@@ -101,7 +106,16 @@ final class CarPlayCoordinator: NSObject {
         orientationObserver = NotificationCenter.default.addObserver(forName: UIDevice.orientationDidChangeNotification,
             object: nil, queue: .main) { [weak self] _ in self?.relayout() }
         backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification,
-            object: nil, queue: .main) { [weak self] _ in self?.stop(reason: "已进入后台，CarPlay 已停止") }
+            object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            if self.active, self.role == .remoteHost {
+                self.log("App 进入后台：远程主机保持连接")
+                return
+            }
+            self.stop(reason: "已进入后台，CarPlay 已停止")
+        }
+        foregroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.didEnterForeground() }
         heartObserver = NotificationCenter.default.addObserver(forName: HeartRateCenter.didUpdate,
             object: nil, queue: .main) { [weak self] _ in self?.heartRail.refresh() }
     }
@@ -110,6 +124,7 @@ final class CarPlayCoordinator: NSObject {
         if let orientationObserver { NotificationCenter.default.removeObserver(orientationObserver) }
         if let backgroundObserver { NotificationCenter.default.removeObserver(backgroundObserver) }
         if let heartObserver { NotificationCenter.default.removeObserver(heartObserver) }
+        if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
         probe.stop(); receiver.stop()
     }
 
@@ -120,6 +135,7 @@ final class CarPlayCoordinator: NSObject {
         case "start":
             // 原来的同机 CarPlay，保留给 iPhone 本机显示；网页默认会走 startRemote。
             role = .local
+            syncCarPlayKeepAlive()
             saveReceiverConfig(body)
             recovering = false; recoveryCount = 0; lastRecoveryAt = 0
             localStallRetries = 0
@@ -131,6 +147,7 @@ final class CarPlayCoordinator: NSObject {
             // 从「投到 iPad」切回「本机显示」：先让 iPad 关掉接收端，再等 iOS
             // 放下旧的控制连接，最后才起本机探针。否则本机会一直卡在等待 TCP。
             role = .local
+            syncCarPlayKeepAlive()
             saveReceiverConfig(body)
             recovering = false; recoveryCount = 0; lastRecoveryAt = 0
             localStallRetries = 0
@@ -153,6 +170,7 @@ final class CarPlayCoordinator: NSObject {
         case "startRemote":
             // iPhone 只做虚拟配件探针，目标指向同一局域网内的 iPad。
             role = .remoteHost
+            syncCarPlayKeepAlive()
             saveReceiverConfig(body)
             remoteTarget = parseRemoteTarget(body)
             if let name = body["targetName"] as? String, !name.isEmpty { remoteTargetName = name }
@@ -164,6 +182,7 @@ final class CarPlayCoordinator: NSObject {
         case "startReceiver":
             // iPad 只做接收端，不启动本机探针。
             role = .receiver
+            syncCarPlayKeepAlive()
             saveReceiverConfig(body)
             recovering = false; recoveryCount = 0; lastRecoveryAt = 0
             push(state: "starting", message: "正在准备 iPad 接收端…")
@@ -386,10 +405,11 @@ final class CarPlayCoordinator: NSObject {
         }
         if !recovering { recoveryCount = 0; lastRecoveryAt = 0 }
         if let ssid, !ssid.isEmpty {
-            beginRemote(target: target, ssid: ssid, password: password ?? "")
+            beginRemote(target: target, ssid: ssid, password: password ?? "",
+                        persistCredentials: ssid != "CarPlay")
             return
         }
-        if let saved = lastSSID {
+        if let saved = lastSSID, saved != "CarPlay" {
             let stored = (try? WiFiCredentials.password(for: saved)) ?? nil
             beginRemote(target: target, ssid: saved, password: stored ?? "")
             return
@@ -437,6 +457,12 @@ final class CarPlayCoordinator: NSObject {
         }
     }
 
+    private func syncCarPlayKeepAlive() {
+        // 只有 iPhone → iPad 的远程主机需要后台存活；本机显示和 iPad 接收端
+        // 都依赖屏幕/前台，退后台本来就该停。
+        (host as? WebViewController)?.setCarPlayKeepAlive(active && role == .remoteHost)
+    }
+
     private func beginRemote(target: (host: String, port: UInt16), ssid: String, password: String,
                              persistCredentials: Bool = true) {
         guard let address = ReceiverConfiguration.wifiIPv4Address() else {
@@ -455,6 +481,7 @@ final class CarPlayCoordinator: NSObject {
         }
         _ = address   // 只用来确认本机确实在局域网上；目标地址来自网页。
         lastRemoteStatus = ""
+        lastHealthyRemoteStatus = ""
         // 先让探针起来：状态回执监听是锦上添花，绝不能挡在真实 CarPlay 握手前面。
         // 以前这里先起 UDP listener，任何监听初始化异常/权限弹层都可能把启动流程卡在
         // 「正在启动」而探针根本没发出去；现在把它挪到 probe.start 之后。
@@ -469,6 +496,7 @@ final class CarPlayCoordinator: NSObject {
         }
 
         active = true
+        syncCarPlayKeepAlive()
         displayedVideo = false
         controlConnected = false
         covered = false
@@ -526,6 +554,7 @@ final class CarPlayCoordinator: NSObject {
         }
 
         active = true
+        syncCarPlayKeepAlive()
         displayedVideo = false
         controlConnected = false
         covered = false
@@ -624,6 +653,7 @@ final class CarPlayCoordinator: NSObject {
         try? WiFiCredentials.save(password, for: ssid)
 
         active = true
+        syncCarPlayKeepAlive()
         displayedVideo = false
         controlConnected = false
         covered = false
@@ -726,6 +756,8 @@ final class CarPlayCoordinator: NSObject {
         guard active || !stage.isHidden || resolvingSSID else { return }
         resolvingSSID = false
         active = false
+        syncCarPlayKeepAlive()
+        remoteLostWork?.cancel(); remoteLostWork = nil
         displayedVideo = false
         controlConnected = false
         covered = false
@@ -736,6 +768,7 @@ final class CarPlayCoordinator: NSObject {
         remoteStatusListener?.stop(); remoteStatusListener = nil
         remoteControlListener?.stop(); remoteControlListener = nil
         lastRemoteStatus = ""
+        lastHealthyRemoteStatus = ""
         probe.stop()
         receiver.stop()
         stage.surface.reset()
@@ -966,17 +999,72 @@ final class CarPlayCoordinator: NSObject {
         guard role == .remoteHost, active else { return }
         let normalized = state.hasPrefix("lost") ? "lost" : state
         guard normalized != lastRemoteStatus else { return }
+        let previous = lastRemoteStatus
         lastRemoteStatus = normalized
         switch normalized {
         case "connected":
+            remoteLostWork?.cancel(); remoteLostWork = nil
+            lastHealthyRemoteStatus = normalized
             push(state: "connected", message: "iPad 已连接，CarPlay 正在显示", extra: ["remote": 1])
         case "video":
+            remoteLostWork?.cancel(); remoteLostWork = nil
+            lastHealthyRemoteStatus = normalized
             push(state: "connected", message: "CarPlay 已连接 · iPad 正在显示", extra: ["remote": 1])
-        case "disconnected", "lost":
-            push(state: "waiting", message: "等待 iPad 确认连接…", extra: ["remote": 1])
+        case "disconnected":
+            // iPad 是主动收掉接收端，不是 UDP 漏包；直接进入自动重连，
+            // 不能停在 waiting，否则网页会清掉重试计时器，只能人工长按。
+            lastHealthyRemoteStatus = ""
+            push(state: "failed", message: "iPad 接收端已断开，正在自动重连", extra: ["remote": 1])
+        case "lost":
+            if previous == "connected" || previous == "video" {
+                // 心跳丢包但会话不一定断：先保持“已连接”，不清空网页的 Want，
+                // 也不把状态降级成「等待 iPad 确认」；15 秒仍无包才重建。
+                log("iPad 心跳短暂丢失，保持当前连接状态")
+                push(state: "connected", message: "CarPlay 已连接 · iPad 正在显示（同步中）", extra: ["remote": 1])
+                scheduleRemoteLostRecovery()
+            } else {
+                push(state: "waiting", message: "等待 iPad 确认连接…", extra: ["remote": 1])
+            }
         default:
             break
         }
+    }
+
+    private func didEnterForeground() {
+        guard active, role == .remoteHost else { return }
+        remoteStatusListener?.markFresh()
+        // WKWebView 在后台可能收不到 evaluateJavaScript；回前台补一次当前状态，
+        // 避免页面停在进入后台前的“正在启动/等待”。
+        if !lastHealthyRemoteStatus.isEmpty {
+            push(state: "connected", message: "CarPlay 已连接 · iPad 正在显示", extra: ["remote": 1])
+        }
+    }
+
+    private func scheduleRemoteLostRecovery() {
+        remoteLostWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.active, self.role == .remoteHost,
+                  self.lastRemoteStatus == "lost", !self.recovering else { return }
+            self.log("iPad 心跳持续丢失，重建远程 CarPlay 会话")
+            if let peer = self.remoteTarget?.host {
+                RemoteControlSender.send("stop", host: peer)
+            }
+            self.recovering = true
+            self.stop(reason: "iPad 状态中断，正在自动重连", state: "starting", keepRecovery: true)
+            // iPad 收到 stop 后网页退避约 4 秒才重启接收端；等它重新 listen 再发探针，
+            // 否则新探针会打在一个还没起来的端口上，又白等一轮。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) { [weak self] in
+                guard let self, !self.active, self.recovering else { return }
+                let savedSSID = self.lastSSID == "CarPlay" ? nil : self.lastSSID
+                var password: String? = nil
+                if let savedSSID, let stored = try? WiFiCredentials.password(for: savedSSID) {
+                    password = stored
+                }
+                self.startRemote(ssid: savedSSID, password: password)
+            }
+        }
+        remoteLostWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
     }
 
     private func push(state: String, message: String, extra: [String: Any] = [:]) {
