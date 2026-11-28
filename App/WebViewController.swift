@@ -36,6 +36,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     /// 网络状态监视：断网时给一句人话，网络恢复立刻把页面拉回来（原来只有一张报错卡，用户得自己点重试）
     private let netMonitor = NWPathMonitor()
     private var netUp = true
+    /// 键盘避让：键盘占了多高（0 = 收起来了）
+    private var kbOverlap: CGFloat = 0
 
     /// 站点里的 dndLockSync() 只认 window.Capacitor.Plugins.DndLive；
     /// 这里在文档开始前塞一个同名 shim，把调用转成 WK 消息，网页代码一行不用改。
@@ -107,6 +109,15 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         carPlay?.relayout()
+        // 转屏 / 分屏会让 bounds 变，键盘还开着就得按新高度重算一次
+        if kbOverlap > 0, let wv = webView {
+            let target = max(120, view.bounds.height - kbOverlap)
+            if abs(wv.frame.height - target) > 0.5 {
+                var f = wv.frame
+                f.size.height = target
+                wv.frame = f
+            }
+        }
     }
 
     override func viewDidLoad() {
@@ -158,6 +169,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         }
         addBoot()
         startNetMonitor()
+        startKeyboardAvoidance()
         NotificationCenter.default.addObserver(self, selector: #selector(onActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
         load()
@@ -289,6 +301,50 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             }
         }
         netMonitor.start(queue: DispatchQueue(label: "stocks.net.monitor", qos: .utility))
+    }
+
+    // MARK: - 键盘避让
+    // 网页里 AI 浮条是贴在屏幕最底的一层固定浮层，键盘一弹就把输入行压住。
+    // WKWebView 想去「滚到光标」却没地方可滚，来回试几次就把键盘收掉——
+    // 真机表现就是「打着打着键盘自己消失、放着不动也消失」，系统键盘一样。
+    // 壳这层不再和 WebKit 抢：直接把 WebView 的高度让到键盘上方，
+    // 输入行始终落在可视区里，键盘就不会被反复收起。
+
+    private func startKeyboardAvoidance() {
+        let c = NotificationCenter.default
+        c.addObserver(self, selector: #selector(keyboardWillChange(_:)),
+                      name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        c.addObserver(self, selector: #selector(keyboardWillHide(_:)),
+                      name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    @objc private func keyboardWillChange(_ n: Notification) {
+        guard let win = view.window,
+              let end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+        else { return }
+        // 键盘在窗口坐标系里的上沿，换到本视图后再算遮挡高度
+        let inView = view.convert(end, from: win)
+        applyKeyboardOverlap(max(0, view.bounds.maxY - inView.minY), notification: n)
+    }
+
+    @objc private func keyboardWillHide(_ n: Notification) {
+        applyKeyboardOverlap(0, notification: n)
+    }
+
+    private func applyKeyboardOverlap(_ overlap: CGFloat, notification: Notification) {
+        guard let wv = webView else { return }
+        kbOverlap = overlap
+        let target = max(120, view.bounds.height - overlap)
+        guard abs(wv.frame.height - target) > 0.5 else { return }
+        var f = wv.frame
+        f.size.height = target
+        let dur = (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0
+        if dur > 0 {
+            UIView.animate(withDuration: dur, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction],
+                           animations: { wv.frame = f })
+        } else {
+            wv.frame = f
+        }
     }
 
     @objc private func retry() {
