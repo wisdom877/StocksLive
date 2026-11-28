@@ -97,6 +97,15 @@ App/CarPlay/
 5. 新增 `CarPlayCoordinator` / `CarPlayStageView`：桥、几何、进出、状态回传。
 6. `CarPlayInfo`：能力声明原样保留，只改显示名/型号字符串。
 
+## 本机画面独占音频（2026-11-28 22:20 加）
+
+本机模式（设置页「CarPlay 画面」= 本机，`role == .local`）音频由本机 CarPlay 会话输出。
+壳里那条 0.01 音量静音循环（`standbyOn || carPlayKeepAlive`）会一直占 `AVAudioSession`，把它压掉。
+
+- 原生侧：`syncCarPlayKeepAlive()` 本来就是 `active && (remoteHost || receiver)`，本机不挂保活。
+- 网页侧：`sbCpLocalOn()` 启动 `startLocal` 前调 `sbCpAudioYield(true)`——若待机保活原为开，发壳已有的 `{cmd:"standby", on:false}` 临时关掉；会话收尾（`idle/failed` 且 `sbCpWant()` 为假）、或切到 iPad/接收端时 `sbCpAudioYield(false)` 按原状态还回去。
+- 边界：`sbCpAudioYield` 读的是 `app-base.js` 的全局 `state.wkStandby`（经典脚本共享全局词法作用域），不改 `app-work.js`；若该字段改名会静默失效（整体包在 try 里，不会报错）。本机模式不再依赖静音循环，切后台会话会被系统挂起属预期。
+
 ## 连接信息可改（2026-11-28 21:20 加）
 
 以前只有长按 Hello 弹出的连接 sheet 能填 SSID / 密码 / iPad 地址·端口，连过一次就没入口改。

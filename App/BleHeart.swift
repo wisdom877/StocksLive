@@ -18,7 +18,9 @@ final class BleHeart: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var scanningAll = false
     private var scanStartedAt = Date()
     private var retryWork: DispatchWorkItem?
+    private var scanTimeout: DispatchWorkItem?
     private var paused = false
+    private var wanted = false        // 2026-11-29 性能：扫描改成按需，网页开/关待机或心率卡时才置位
 
     private let svcHR = CBUUID(string: "180D")      // Heart Rate
     private let chrHR = CBUUID(string: "2A37")      // Heart Rate Measurement
@@ -29,38 +31,68 @@ final class BleHeart: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appForeground),
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
-        start()
+        // 2026-11-29 性能：不再「启动即扫」。蓝牙中心扫描是最耗电的一段，
+        // 打开 App 就开着会让射频一直醒着；改由网页按需下发 {cmd:"hr",on:1}。
     }
 
     /// 进后台停扫：蓝牙中心扫描是最耗电的那一段，已经连上的设备继续收 notify 不受影响
     @objc private func appBackground() {
         paused = true
         retryWork?.cancel()
+        scanTimeout?.cancel()
         if target == nil { central?.stopScan() }
     }
     @objc private func appForeground() {
         paused = false
+        guard wanted else { return }
         if target == nil { start() }
     }
 
     func start() {
+        wanted = true
         guard !paused else { return }
         if let c = central {
-            if c.state == .poweredOn { scan() }
+            if c.state == .poweredOn, target == nil { scan() }
             return
         }
         central = CBCentralManager(delegate: self, queue: .main,
                                    options: [CBCentralManagerOptionShowPowerAlertKey: false])
     }
 
+    /// 关掉扫描：待机退出 / 用户不看心率时调用。已连上的设备继续收 notify（那条不耗射频），只停扫描。
+    func stop() {
+        wanted = false
+        retryWork?.cancel(); retryWork = nil
+        scanTimeout?.cancel(); scanTimeout = nil
+        central?.stopScan()
+    }
+
     private func scan() {
-        guard let c = central, c.state == .poweredOn else { return }
+        guard wanted, !paused, let c = central, c.state == .poweredOn else { return }
         if c.isScanning { c.stopScan() }
         scanningAll = false
         scanStartedAt = Date()
         // 先按服务过滤（省电、命中准）；8 秒没结果再放开扫全部，兜住那些只在名字里带 HR 的设备
         c.scanForPeripherals(withServices: [svcHR],
                              options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])   // 重复包会把回调刷爆，心率 1Hz 就够
+        // 2026-11-29 性能：原来扫不到设备就一直扫下去，射频永不休息。8 秒无果先停，60 秒后再试一次。
+        scanTimeout?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, self.target == nil else { return }
+            self.central?.stopScan()
+            self.scanStartedAt = Date()
+            self.scheduleRetry(after: 60)
+        }
+        scanTimeout = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: w)
+    }
+
+    private func scheduleRetry(after sec: Double) {
+        retryWork?.cancel()
+        guard wanted, !paused else { return }
+        let w = DispatchWorkItem { [weak self] in self?.scan() }
+        retryWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + sec, execute: w)
     }
 
     private func scanWide() {
@@ -76,9 +108,9 @@ final class BleHeart: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
-            scan()
+            if wanted { scan() }        // 2026-11-29 性能：没被请求就不要再扫
         case .unauthorized, .unsupported, .poweredOff:
-            stopAndRetry(later: 4)
+            stopAndRetry(later: 60)     // 不可用时 4 秒重试太密
         default:
             break
         }
@@ -163,11 +195,8 @@ final class BleHeart: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     private func scheduleReconnect() {
-        retryWork?.cancel()
-        guard !paused else { return }
-        let w = DispatchWorkItem { [weak self] in self?.scan() }
-        retryWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: w)
+        // 2026-11-29 性能：3 秒就重扫太密，断开后 15 秒再试
+        scheduleRetry(after: 15)
     }
 
     private func stopAndRetry(later: Double) {
