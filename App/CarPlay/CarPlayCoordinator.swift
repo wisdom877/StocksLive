@@ -55,6 +55,8 @@ final class CarPlayCoordinator: NSObject {
     private var remoteTargetName = "iPad"
     private var remoteStatusListener: RemoteStatusListener?
     private var remoteStatusBeacon: RemoteStatusBeacon?
+    private var remoteControlListener: RemoteControlListener?
+    private var localStallRetries = 0
     private var lastRemoteStatus = ""
     private var active = false
     private var resolvingSSID = false
@@ -120,10 +122,34 @@ final class CarPlayCoordinator: NSObject {
             role = .local
             saveReceiverConfig(body)
             recovering = false; recoveryCount = 0; lastRecoveryAt = 0
+            localStallRetries = 0
             let ssid = (body["ssid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let password = body["password"] as? String
             push(state: "starting", message: "正在准备本机 CarPlay…")
             start(ssid: ssid, password: password)
+        case "startLocal":
+            // 从「投到 iPad」切回「本机显示」：先让 iPad 关掉接收端，再等 iOS
+            // 放下旧的控制连接，最后才起本机探针。否则本机会一直卡在等待 TCP。
+            role = .local
+            saveReceiverConfig(body)
+            recovering = false; recoveryCount = 0; lastRecoveryAt = 0
+            localStallRetries = 0
+            let ssid = (body["ssid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let password = body["password"] as? String
+            let peer = remoteTarget?.host
+            if let peer { RemoteControlSender.send("stop", host: peer) }
+            let needsWait = active || resolvingSSID || peer != nil
+            if active || resolvingSSID { stop(reason: "正在切换到本机显示…", keepRecovery: false) }
+            push(state: "starting", message: "正在切换到本机 CarPlay…")
+            let launch = { [weak self] in
+                guard let self, !self.active else { return }
+                self.start(ssid: ssid, password: password)
+            }
+            if needsWait {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: launch)
+            } else {
+                launch()
+            }
         case "startRemote":
             // iPhone 只做虚拟配件探针，目标指向同一局域网内的 iPad。
             role = .remoteHost
@@ -269,19 +295,14 @@ final class CarPlayCoordinator: NSObject {
             begin(ssid: ssid, password: password ?? "")
             return
         }
-        if let saved = lastSSID {
+        if let saved = lastSSID, saved != "CarPlay" {
             let stored = (try? WiFiCredentials.password(for: saved)) ?? nil
             begin(ssid: saved, password: stored ?? "")
             return
         }
-        resolvingSSID = true
-        push(state: "starting", message: "正在读取当前 Wi-Fi…")
-        ssidReader.currentSSID { [weak self] name in
-            guard let self, self.resolvingSSID else { return }
-            self.resolvingSSID = false
-            guard !self.active else { return }
-            self.requestCredentials(ssid: name)
-        }
+        // 本机 CarPlay 需要真实 Wi-Fi 名称/密码；读 SSID 在部分系统会卡住，
+        // 没保存过就直接弹输入层，别让「本机」永远停在启动中。
+        requestCredentials(ssid: nil)
     }
 
     // 凭据交给网页里的弹层输入，不再用系统 Alert；网页负责键盘与主题。
@@ -375,7 +396,7 @@ final class CarPlayCoordinator: NSObject {
         }
         // 远程链路真正需要的是 iPad 的 IP:7000；SSID/密码只用于配件描述。
         // 没有历史凭据时不再弹“读取 Wi-Fi”，先用 CarPlay 占位把探针发出去。
-        beginRemote(target: target, ssid: "CarPlay", password: "")
+        beginRemote(target: target, ssid: "CarPlay", password: "", persistCredentials: false)
     }
 
     private func startReceiver() {
@@ -416,7 +437,8 @@ final class CarPlayCoordinator: NSObject {
         }
     }
 
-    private func beginRemote(target: (host: String, port: UInt16), ssid: String, password: String) {
+    private func beginRemote(target: (host: String, port: UInt16), ssid: String, password: String,
+                             persistCredentials: Bool = true) {
         guard let address = ReceiverConfiguration.wifiIPv4Address() else {
             push(state: "failed", message: "请先连接 Wi-Fi；iPhone 需要一个局域网地址。")
             return
@@ -438,7 +460,9 @@ final class CarPlayCoordinator: NSObject {
         // 「正在启动」而探针根本没发出去；现在把它挪到 probe.start 之后。
         remoteStatusListener?.stop()
         remoteStatusListener = nil
-        if !ssid.isEmpty {
+        // 占位名只用于让探针先发出去，不能写进本机 CarPlay 的凭据；
+        // 否则之后切「本机显示」会拿 “CarPlay / 空密码” 去请求，iOS 连不上。
+        if persistCredentials, !ssid.isEmpty {
             UserDefaults.standard.set(ssid, forKey: Self.ssidKey)
             lastSSID = ssid
             try? WiFiCredentials.save(password, for: ssid)
@@ -627,6 +651,7 @@ final class CarPlayCoordinator: NSObject {
         }
         receiver.onControlConnected = { [weak self] _ in
             self?.controlConnected = true
+            self?.localStallRetries = 0
             self?.videoStartAt = CACurrentMediaTime()
             self?.push(state: "ready", message: "已连接，正在协商画面…")
             self?.probe.didConnectControl()
@@ -657,7 +682,19 @@ final class CarPlayCoordinator: NSObject {
 
         probe.onLog = { [weak self] line in self?.log(line) }
         probe.onStage = { [weak self] message in
-            self?.push(state: "auth", message: message)
+            guard let self else { return }
+            self.push(state: "auth", message: message)
+            if message.contains("等待 TCP 连接") {
+                // 从远端切回本机时，iOS 偶尔还握着旧会话；本机探针发出请求后
+                // 迟迟没有 TCP 回来，就整段重来一次，逼 iOS 放下旧控制连接。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                    guard let self, self.active, self.role == .local,
+                          !self.controlConnected, self.localStallRetries < 2 else { return }
+                    self.localStallRetries += 1
+                    self.log("本机 TCP 未建立，重启本机会话（第 \(self.localStallRetries) 次）")
+                    self.restartCurrent(resetRecovery: false)
+                }
+            }
         }
         probe.onFinished = { [weak self] message in
             self?.stop(reason: message, state: "failed")
@@ -668,6 +705,19 @@ final class CarPlayCoordinator: NSObject {
             var live = config; live.port = port
             self.probe.start(configuration: live, identity: identity)
         }
+        // iPad 接收端额外监听 iPhone 的切换指令：iPhone 改回本机显示时，
+        // 先让 iPad 主动收掉控制/媒体连接，iOS 才会放下远端会话。
+        remoteControlListener?.stop()
+        let control = RemoteControlListener()
+        control.onCommand = { [weak self] command in
+            guard let self else { return }
+            if command == "stop" {
+                self.stop(reason: "iPhone 已切换到本机显示")
+            }
+        }
+        do { try control.start(port: RemoteControlPacket.port) }
+        catch { log("切换指令监听失败：\(error.localizedDescription)") }
+        remoteControlListener = control
         receiver.start(configuration: config, identity: identity)
         startVideoHealthTimer()
     }
@@ -684,6 +734,7 @@ final class CarPlayCoordinator: NSObject {
         remoteStatusBeacon?.update("disconnected")
         remoteStatusBeacon?.stop(); remoteStatusBeacon = nil
         remoteStatusListener?.stop(); remoteStatusListener = nil
+        remoteControlListener?.stop(); remoteControlListener = nil
         lastRemoteStatus = ""
         probe.stop()
         receiver.stop()

@@ -252,7 +252,7 @@ function sbCarPlaySubmit() {
   if (sbCpHd()) {
     sbCarPlayMsg(Object.assign({ cmd: "startReceiver" }, sbCpConfig()));
   } else if (local) {
-    sbCarPlayMsg(Object.assign({ cmd: "start" },
+    sbCarPlayMsg(Object.assign({ cmd: "startLocal" },
       sbCpConfig(), { ssid: ssid, password: (pw && pw.value) || "" }));
   } else {
     sbCarPlayMsg(Object.assign({ cmd: "startRemote", target: host, port: port, targetName: "iPad" },
@@ -570,7 +570,7 @@ function sbCarPlayStartNow() {
   }
   if (sbCpLocalOn()) {
     // iPhone 自己显示：回到原来的同机 CarPlay，不依赖 iPad，也不要求先填 iPad 地址。
-    if (!sbCarPlayMsg(Object.assign({ cmd: "start" }, c))) {
+    if (!sbCarPlayMsg(Object.assign({ cmd: "startLocal" }, c))) {
       sbCpWantSet(false);
       sbCarPlaySet("failed", "当前壳版本不支持本机 CarPlay"); return;
     }
@@ -2515,14 +2515,16 @@ function sbSetPaint() {
     e.stopPropagation();
     sbCpConfigSend();
     sbSetClose(true);
-    // 画面参数或本机/远程角色只能在会话开始前生效：先收掉旧会话，再按新角色重新握手。
-    try { sbCarPlayMsg({ cmd: "stop" }); } catch (err) {}
-    sbCarPlaySet("idle", "");
+    // 画面参数或本机/远程角色只能在会话开始前生效：让壳收掉旧会话，
+    // 本机切换会先通知 iPad 释放控制连接，再起本机探针。
     const restart = sbCpWant() || sbCpVideo();
-    if (restart) setTimeout(() => {
-      if (sbState().on && sbState().page === 6) sbCarPlayStartNow();
-    }, 360);
-    toast(restart ? "正在用新设置重连 CarPlay" : "CarPlay 设置已保存");
+    if (restart) {
+      sbCarPlayStartNow();
+      toast("正在用新设置重连 CarPlay");
+    } else {
+      sbCarPlaySet("idle", "");
+      toast("CarPlay 设置已保存");
+    }
   };
 }
 function sbSetOpen() {
