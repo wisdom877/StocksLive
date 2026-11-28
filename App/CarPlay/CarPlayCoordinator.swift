@@ -53,6 +53,9 @@ final class CarPlayCoordinator: NSObject {
     private var role: Role = .local
     private var remoteTarget: (host: String, port: UInt16)?
     private var remoteTargetName = "iPad"
+    private var remoteStatusListener: RemoteStatusListener?
+    private var remoteStatusBeacon: RemoteStatusBeacon?
+    private var lastRemoteStatus = ""
     private var active = false
     private var resolvingSSID = false
     private var displayedVideo = false
@@ -388,6 +391,13 @@ final class CarPlayCoordinator: NSObject {
             return
         }
         _ = address   // 只用来确认本机确实在局域网上；目标地址来自网页。
+        lastRemoteStatus = ""
+        remoteStatusListener?.stop()
+        let listener = RemoteStatusListener()
+        listener.onState = { [weak self] state in self?.handleRemoteStatus(state) }
+        do { try listener.start(port: RemoteStatusPacket.port) }
+        catch { log("远程状态监听失败：\(error.localizedDescription)") }
+        remoteStatusListener = listener
         if !ssid.isEmpty {
             UserDefaults.standard.set(ssid, forKey: Self.ssidKey)
             lastSSID = ssid
@@ -466,10 +476,17 @@ final class CarPlayCoordinator: NSObject {
         receiver.onFailure = { [weak self] message in
             self?.stop(reason: message, state: "failed")
         }
-        receiver.onControlConnected = { [weak self] in
-            self?.controlConnected = true
-            self?.videoStartAt = CACurrentMediaTime()
-            self?.push(state: "ready", message: "iPhone 已连接，正在协商画面…")
+        receiver.onControlConnected = { [weak self] peer in
+            guard let self else { return }
+            self.controlConnected = true
+            self.videoStartAt = CACurrentMediaTime()
+            self.push(state: "ready", message: "iPhone 已连接，正在协商画面…")
+            if let peer, !peer.isEmpty {
+                self.remoteStatusBeacon?.stop()
+                let beacon = RemoteStatusBeacon()
+                beacon.start(peer: peer, state: "connected")
+                self.remoteStatusBeacon = beacon
+            }
         }
         receiver.onVideoClosed = { [weak self] in self?.videoDidClose("视频通道已关闭") }
         receiver.onVideoStalled = { [weak self] reason in self?.videoDidClose(reason) }
@@ -490,6 +507,7 @@ final class CarPlayCoordinator: NSObject {
                     self.heartRail.refresh()
                     self.relayout()
                     self.push(state: "video", message: "CarPlay 画面已就绪")
+                    self.remoteStatusBeacon?.update("video")
                 }
             } catch {
                 self.log("视频显示失败：\(error.localizedDescription)")
@@ -557,7 +575,7 @@ final class CarPlayCoordinator: NSObject {
         receiver.onFailure = { [weak self] message in
             self?.stop(reason: message, state: "failed")
         }
-        receiver.onControlConnected = { [weak self] in
+        receiver.onControlConnected = { [weak self] _ in
             self?.controlConnected = true
             self?.videoStartAt = CACurrentMediaTime()
             self?.push(state: "ready", message: "已连接，正在协商画面…")
@@ -613,6 +631,10 @@ final class CarPlayCoordinator: NSObject {
         covered = false
         if !keepRecovery { recovering = false }
         videoHealthTimer?.invalidate(); videoHealthTimer = nil
+        remoteStatusBeacon?.update("disconnected")
+        remoteStatusBeacon?.stop(); remoteStatusBeacon = nil
+        remoteStatusListener?.stop(); remoteStatusListener = nil
+        lastRemoteStatus = ""
         probe.stop()
         receiver.stop()
         stage.surface.reset()
@@ -836,6 +858,23 @@ final class CarPlayCoordinator: NSObject {
     private func log(_ line: String) {
         NSLog("[CarPlay] %@", line)
         // 日志不逐条推到网页，避免连接过程里刷屏；只看最后一条错误。
+    }
+
+    private func handleRemoteStatus(_ state: String) {
+        guard role == .remoteHost, active else { return }
+        let normalized = state.hasPrefix("lost") ? "lost" : state
+        guard normalized != lastRemoteStatus else { return }
+        lastRemoteStatus = normalized
+        switch normalized {
+        case "connected":
+            push(state: "connected", message: "iPad 已连接，CarPlay 正在显示", extra: ["remote": 1])
+        case "video":
+            push(state: "connected", message: "CarPlay 已连接 · iPad 正在显示", extra: ["remote": 1])
+        case "disconnected", "lost":
+            push(state: "waiting", message: "等待 iPad 确认连接…", extra: ["remote": 1])
+        default:
+            break
+        }
     }
 
     private func push(state: String, message: String, extra: [String: Any] = [:]) {

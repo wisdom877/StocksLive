@@ -39,7 +39,7 @@ final class CarPlayReceiver {
 
     var onLog: ((String) -> Void)?
     var onListening: ((UInt16) -> Void)?
-    var onControlConnected: (() -> Void)?
+    var onControlConnected: ((String?) -> Void)?
     var onVideo: ((Data, VideoCodec) -> Void)?
     var onVideoClosed: (() -> Void)?
     var onVideoStalled: ((String) -> Void)?
@@ -137,7 +137,8 @@ final class CarPlayReceiver {
                     switch update {
                     case .ready:
                         self.log("收到控制连接")
-                        DispatchQueue.main.async { [weak self] in self?.onControlConnected?() }
+                        let peer = state.peerAddress
+                        DispatchQueue.main.async { [weak self] in self?.onControlConnected?(peer) }
                         self.receive(connection, id: id, state: state, configuration: configuration, identity: identity)
                     case .failed, .cancelled:
                         state.media?.stop(); self.sessions.removeValue(forKey: id); self.connections.removeValue(forKey: id)
