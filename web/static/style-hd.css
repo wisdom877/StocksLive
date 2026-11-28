@@ -1,0 +1,1398 @@
+/* ============================================================
+   iPad HD 专用布局
+   只在 html.wk-hd 下生效：HD 壳在文档开始前注入 window.wkHD，
+   index.html 再加载本文件。iPhone 不加载、也不会命中下面的任何选择器。
+   目标：把原来按 393pt 手机宽度打磨的页面，在 744–1366pt 的 iPad 上
+   重新给足宽度、留白和可读行宽；不改颜色、不改图标、不改 iPhone 的任何规则。
+   ============================================================ */
+
+html.wk-hd{
+  --hd-pad: clamp(20px, 3.2vw, 38px);
+  --hd-max: 1120px;
+  --hd-radius: 18px;
+}
+
+html.wk-hd body{font-size:16px}
+
+/* 顶栏：iPad 状态栏比 iPhone 矮，不能沿用 47px 的 iPhone 兜底 */
+html.wk-hd .topbar{
+  padding-left:var(--hd-pad);
+  padding-right:var(--hd-pad);
+  padding-top:calc(max(var(--sat, 0px), env(safe-area-inset-top, 0px), 20px) + 8px);
+  /* 玻璃：iPad 顶栏原本铺实底 --bg，换成同一套玻璃 token（见文件末 HD 玻璃段） */
+}
+/* 顶栏背后的内容滚上来时不能透出日期/表格线，否则会出现「字压在字上」 */
+html.wk-hd .topbar .top-left,
+html.wk-hd .topbar .top-right:has(.icon-btn:not(.hidden)){border-radius:15px}
+html.wk-hd .topbar .top-mid{height:44px}
+
+/* 主内容：从 720 放宽到 1120，短行文本仍保持可读；底部给悬浮 tabbar 留空间 */
+html.wk-hd #main{
+  max-width:var(--hd-max);
+  margin-left:auto;
+  margin-right:auto;
+  padding:calc(var(--topbar-h, 74px) + 16px) var(--hd-pad) 150px;
+}
+/* iPad 底部没有 Home 手势条，倒计时条按 iPhone 的贴底算法会被屏幕下边切掉；
+   HD 统一抬到悬浮导航上方，任何页面都不再出现半行字 */
+html.wk-hd .wk-next{bottom:calc(env(safe-area-inset-bottom, 0px) + 86px)}
+
+html.wk-hd .card,
+html.wk-hd .rows,
+html.wk-hd .idx,
+html.wk-hd .empty{border-radius:var(--hd-radius)}
+
+html.wk-hd .row{padding:15px 18px}
+html.wk-hd .section-head{margin-top:26px}
+
+/* 底部导航：按钮稍微放大，但不把整条拉成一条全宽底板 */
+html.wk-hd .tabbar{
+  bottom:calc(env(safe-area-inset-bottom) + 14px);
+  padding:7px 9px;
+  gap:5px;
+}
+html.wk-hd .tabbar button{width:96px;font-size:12px}
+
+/* 登录：iPad 上不用把输入框拉成整屏，给一个舒服的 360pt 表单宽度 */
+html.wk-hd .auth{padding-top:calc(env(safe-area-inset-top) + 64px);padding-bottom:calc(env(safe-area-inset-bottom) + 64px)}
+html.wk-hd .auth-card{max-width:360px}
+html.wk-hd .auth-logo{width:96px;height:96px;margin-bottom:28px}
+html.wk-hd .auth-title{font-size:34px}
+html.wk-hd .auth-form{margin-top:36px}
+html.wk-hd .auth-input,
+html.wk-hd .auth-btn{height:54px}
+
+/* 记录页：宽屏两列，卡片按自身高度排列；窄 iPad（744）仍保持一列 */
+@media (min-width:900px){
+  html.wk-hd #notes{
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:14px;
+    align-items:start;
+  }
+  html.wk-hd #notes > .empty{grid-column:1/-1}
+  html.wk-hd #notes .note{width:100%}
+}
+
+/* 持仓/自选：横屏够宽时把独立卡片铺成两列；分组标题仍然整行，
+   不能让 .group 自己在网格里只占半列、右半屏留空 */
+@media (min-width:1180px){
+  html.wk-hd #hold-list,
+  html.wk-hd #watch-mine #watch-list{display:block}
+  html.wk-hd #hold-list .rows.cards,
+  html.wk-hd #watch-mine #watch-list .rows.cards{
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:14px;
+    align-items:start;
+  }
+  html.wk-hd #hold-list .group,
+  html.wk-hd #watch-mine #watch-list .group{margin-bottom:22px}
+}
+
+/* 弹层：iPad 用居中卡片，不再从屏幕底边顶上来；长内容仍然内部滚动 */
+html.wk-hd .sheet{align-items:center;padding:24px 0}
+html.wk-hd .sheet-body{
+  width:min(760px, calc(100vw - 2 * var(--hd-pad)));
+  max-width:760px;
+  max-height:84vh;
+  border-radius:24px;
+  padding:20px 22px calc(20px + env(safe-area-inset-bottom));
+  box-shadow:0 24px 80px rgba(0,0,0,.24);
+}
+html.wk-hd .sheet-head{
+  top:-10px;
+  margin:-20px -22px 10px;
+  padding:10px 22px 8px;
+  min-height:50px;
+}
+html.wk-hd .sheet-head b{font-size:16px;padding:7px 15px;border-radius:18px}
+html.wk-hd .sheet-head .icon-btn{width:36px;height:36px}
+html.wk-hd .sheet-body:has(#sheet-content > .wk-form) .sheet-head{margin-bottom:28px}
+/* 「更多」是 13 行长列表：iPhone 的 40vh 限高在横向 iPad 上只剩 410pt，
+   底部会顶出屏幕；HD 改成居中、70vh 内滚动，看到哪一行都不会被屏幕边裁掉 */
+html.wk-hd .sheet-body:has(#sheet-content > .more-list){
+  max-height:calc(100vh - 48px);
+  overflow-y:auto;
+}
+html.wk-hd .sheet-actions{margin-top:18px}
+
+/* 全局搜索 / 资讯：内容居中，两侧留白，不贴着 iPad 屏幕边 */
+html.wk-hd .gsearch{padding-left:var(--hd-pad);padding-right:var(--hd-pad)}
+html.wk-hd .gs-head,
+html.wk-hd .gs-body,
+html.wk-hd #gs-info{
+  width:100%;
+  max-width:1000px;
+  margin-left:auto;
+  margin-right:auto;
+}
+html.wk-hd #digest .dg-head{left:var(--hd-pad);right:var(--hd-pad)}
+html.wk-hd #dg-body{
+  width:100%;
+  max-width:1080px;
+  margin-left:auto;
+  margin-right:auto;
+  padding-left:var(--hd-pad);
+  padding-right:var(--hd-pad);
+}
+html.wk-hd #dg-player{
+  width:min(820px, calc(100vw - 2 * var(--hd-pad)));
+  left:50%;
+  right:auto;
+  transform:translateX(-50%);
+}
+
+/* 数据总览：筛选条和滚动区都按 iPad 边距收进来 */
+html.wk-hd .wk-ov-nav{
+  left:var(--hd-pad);
+  right:var(--hd-pad);
+  top:calc(max(var(--sat, 0px), env(safe-area-inset-top, 0px), 20px) + 8px);
+}
+html.wk-hd .wk-ov-fil{left:var(--hd-pad);right:var(--hd-pad)}
+html.wk-hd .wk-ov-scroll{
+  padding-left:var(--hd-pad);
+  padding-right:var(--hd-pad);
+  padding-top:calc(max(var(--sat, 0px), env(safe-area-inset-top, 0px), 20px) + 66px + var(--wk-filh, 96px) + 30px);
+}
+html.wk-hd .wk-ov-body{max-width:1180px;margin-left:auto;margin-right:auto;width:100%}
+html.wk-hd .wk-ov-fil,
+html.wk-hd .wk-ov-scroll{width:auto}
+
+/* 工作页：日历和列表都放宽；底部按钮不压住最后一行 */
+html.wk-hd #view-work .wk-cal{max-width:100%}
+html.wk-hd #view-work .wk-list{padding-bottom:12px}
+html.wk-hd .wk-add{margin-top:18px}
+
+/* 待机：iPad 进入待机时由 HD 壳请求横屏，舞台跟随物理横屏铺满；
+   这里只兜底关闭旋转 transform，避免任何一帧出现斜放/旋转的中间态。 */
+html.wk-hd #sb .sb-stage{
+  left:0;
+  top:0;
+  transform:none;
+  transform-origin:0 0;
+}
+html.wk-hd #sb.sb-land.sb-flip .sb-stage{
+  transform-origin:50% 50%;
+  transform:rotate(180deg);
+}
+html.wk-hd #sb .sb-set-grid{column-count:2}
+html.wk-hd #sb .sb-set-scroll{
+  padding-left:max(32px, calc(env(safe-area-inset-left) + 26px));
+  padding-right:max(32px, calc(env(safe-area-inset-right) + 26px));
+}
+html.wk-hd #sb .sb-peek-list{padding-left:max(28px, calc(env(safe-area-inset-left) + 24px));padding-right:max(28px, calc(env(safe-area-inset-right) + 24px))}
+
+/* 横屏 iPad 上，表单类弹层和手机一样贴底没有意义；让它们保持居中卡片 */
+@media (orientation:landscape){
+  html.wk-hd .sheet{align-items:center}
+}
+
+/* 极窄 iPad（iPad mini 竖屏 744）不再两列，避免卡片被压得太窄 */
+@media (max-width:800px){
+  html.wk-hd #notes{display:flex;flex-direction:column;gap:10px}
+  html.wk-hd #notes .note{width:100%}
+}
+
+/* 窄 iPad（744 / 768 竖屏）：日历格压到 46pt，给底部的「新建日程」让出倒计时条的位置，避免倒计时压住按钮 */
+@media (max-width:800px){
+  html.wk-hd .wk-cal-cell{height:46px}
+}
+
+/* iPad 弹层更高、内部滚动更长：吸顶标题栏必须真正挡住下方滚过的内容，不能只靠两枚玻璃胶囊浮着 */
+html.wk-hd .sheet-head{/* 见文件末 HD 玻璃段 */}
+
+/* 详情页「标题胶囊 + 分段条」两段吸顶之间原本会透出正在滚过的日期行。
+   iPad 高度更大、滚动更长，这里让分段条连同它上方 62pt 一起铺成卡片色，形成一整块干净吸顶区。 */
+html.wk-hd .stock-tabs-wrap{/* 见文件末 HD 玻璃段 */}
+
+/* 个股详情有「标题 + 分段条」两级吸顶。分段条上沿加一块卡片色补片，
+   盖住两级吸顶之间滚过的日期/净值行；不改 header 高度，避免标题与分段条之间出现大空白。 */
+html.wk-hd .sheet-body:has(.stock-tabs-wrap) .sheet-head{
+  z-index:7;
+}
+html.wk-hd .sheet-body:has(.stock-tabs-wrap) .stock-tabs-wrap::before{
+  content:"";
+  position:absolute;
+  left:0;
+  right:0;
+  bottom:100%;
+  height:64px;
+  /* 底色见文件末 HD 玻璃段 */
+  pointer-events:none;
+}
+html.wk-hd .sheet-body:has(.stock-tabs-wrap) .stock-tabs-wrap{
+  z-index:6;
+}
+
+
+/* =====================================================================
+   HD 待机重排（仅 iPad：html.wk-hd；iPhone 完全不吃这套规则）
+
+   设计原则：
+   1. 舞台已经铺满窗口，这里再把七页统一成“安全区 + 两栏网格”，
+      不再沿用手机的 852×393 相对坐标；
+   2. 左栏 74–104px 是固定/翻转胶囊的专用通道，所有内容从它右侧开始，
+      从结构上保证按钮永远不压卡片；
+   3. 顶部 76–96px 留给返回/状态，底部 52–68px 留给圆点，
+      内容只在中间安全区里排；
+   4. 页面内用 grid 的 1fr 行吃掉高度，卡片等高，不再出现半张卡、半页空；
+   5. 只有宽度进入 clamp，字号不会在 1366 的 iPad 上无限膨胀。
+   ===================================================================== */
+html.wk-hd #sb{
+  --hd-gap:clamp(16px, 2.1vw, 28px);
+  --hd-pad-x:clamp(26px, 3vw, 42px);
+  --hd-radius:clamp(20px, 2vw, 28px);
+  --hd-art:clamp(180px, 28vh, 300px);
+}
+
+/* 所有普通待机页：统一安全区。CarPlay 页仍保持满屏 Hello，不套这个 padding。 */
+html.wk-hd #sb .sb-p{
+  box-sizing:border-box;
+  padding:clamp(76px, 7.2vh, 96px) clamp(26px, 3vw, 42px) clamp(52px, 5.5vh, 68px) clamp(74px, 7vw, 104px);
+}
+html.wk-hd #sb .sb-p[data-p="3"]{
+  padding:clamp(76px, 7.2vh, 96px) clamp(26px, 3vw, 42px) clamp(52px, 5.5vh, 68px) clamp(74px, 7vw, 104px);
+}
+html.wk-hd #sb .sb-p[data-p="6"]{padding:0}
+html.wk-hd #sb .sb-glass{border-radius:var(--hd-radius)}
+
+/* ---------- 0 日历：日期区 + 整高月历 ---------- */
+html.wk-hd #sb .sb-cal{
+  display:grid;
+  grid-template-columns:minmax(0, 1.15fr) minmax(300px, .85fr);
+  align-items:stretch;
+  gap:var(--hd-gap);
+  padding-top:0;
+  min-height:0;
+}
+html.wk-hd #sb .sb-cal-l{
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  min-width:0;
+  min-height:0;
+  gap:clamp(8px, 1.4vh, 14px);
+}
+html.wk-hd #sb .sb-cal-md{
+  font-size:clamp(50px, 6.6vw, 86px);
+  line-height:1.02;
+}
+html.wk-hd #sb .sb-cal-wk{margin-top:0}
+html.wk-hd #sb #sb-cal-tr{margin-top:clamp(4px, 1vh, 10px)}
+html.wk-hd #sb #sb-cal-meta{
+  width:min(100%, calc(var(--sb-u) * 360px));
+  max-width:100%;
+  margin-top:0;
+  padding:calc(var(--sb-u) * 8px) calc(var(--sb-u) * 18px);
+}
+html.wk-hd #sb .sb-cal-hr{
+  position:static;
+  inset:auto;
+  width:min(100%, calc(var(--sb-u) * 360px));
+  max-width:100%;
+  margin:0;
+  padding:calc(var(--sb-u) * 9px) calc(var(--sb-u) * 18px);
+}
+html.wk-hd #sb .sb-cal-r{
+  flex:1 1 auto;
+  width:auto;
+  height:100%;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  padding:clamp(22px, 2.6vw, 34px);
+}
+html.wk-hd #sb .sb-cal-r .sb-grid{
+  flex:1 1 auto;
+  align-content:stretch;
+  grid-auto-rows:1fr;
+}
+
+/* ---------- 1 今日行情：左侧主数字，右侧信息行，整高 ---------- */
+html.wk-hd #sb .sb-day-hd{
+  position:absolute;
+  top:calc(var(--sb-u) * 10px);
+  right:clamp(26px, 3vw, 42px);
+  margin:0;
+}
+html.wk-hd #sb .sb-day-main{
+  display:grid;
+  grid-template-columns:minmax(0, 1.6fr) minmax(300px, 1fr);
+  gap:var(--hd-gap);
+  flex:1 1 auto;
+  min-height:0;
+  margin-top:0;
+}
+html.wk-hd #sb .sb-day-l,
+html.wk-hd #sb .sb-day-r{
+  height:100%;
+  min-height:0;
+}
+html.wk-hd #sb .sb-day-l{
+  padding:clamp(26px, 3.2vw, 44px);
+  justify-content:flex-start;
+}
+html.wk-hd #sb .sb-day-v{
+  margin-top:clamp(8px, 1.3vh, 14px);
+  font-size:clamp(54px, 7vw, 92px);
+}
+html.wk-hd #sb .sb-day-l .sb-hr{margin-top:auto}
+html.wk-hd #sb .sb-day-r{
+  padding:calc(var(--sb-u) * 8px) clamp(22px, 2.4vw, 34px);
+  justify-content:stretch;
+}
+html.wk-hd #sb .sb-day-row{
+  flex:1 1 0;
+  align-items:center;
+  padding:0;
+  border-bottom:1px solid var(--sbw08);
+}
+html.wk-hd #sb .sb-day-r .sb-day-row:last-child{border-bottom:0}
+html.wk-hd #sb .sb-day .sb-stamp{
+  position:absolute;
+  left:auto;
+  right:clamp(26px, 3vw, 42px);
+  bottom:clamp(12px, 2vh, 18px);
+  width:auto;
+  padding:0;
+  text-align:right;
+}
+
+/* ---------- 2 数字钟：真正居中，不再左偏 ---------- */
+html.wk-hd #sb .sb-clock{
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+  gap:clamp(12px, 2.2vh, 22px);
+}
+html.wk-hd #sb .sb-big{
+  justify-content:center;
+  font-size:clamp(120px, 16.8vw, 210px);
+}
+html.wk-hd #sb .sb-big i{font-size:clamp(34px, 4.4vw, 64px)}
+html.wk-hd #sb .sb-caps{justify-content:center}
+
+/* ---------- 3 体能训练：左概览、右心率，右卡曲线吃满高度 ---------- */
+html.wk-hd #sb .sb-wo{
+  display:grid;
+  grid-template-columns:minmax(0, 1fr) minmax(0, 1.05fr);
+  align-items:stretch;
+  gap:var(--hd-gap);
+  height:100%;
+}
+html.wk-hd #sb .sb-wo-l,
+html.wk-hd #sb .sb-wo-r{
+  height:100%;
+  min-height:0;
+  padding:clamp(26px, 3.2vw, 44px);
+}
+html.wk-hd #sb .sb-wo-l{justify-content:center}
+html.wk-hd #sb .sb-wo-r{justify-content:flex-start}
+html.wk-hd #sb .sb-wo-curve{
+  flex:1 1 auto;
+  height:auto;
+  min-height:clamp(70px, 12vh, 150px);
+  margin-top:clamp(4px, 1vh, 10px);
+}
+html.wk-hd #sb .sb-wo-stats{margin-top:auto;padding-top:clamp(10px, 1.6vh, 18px)}
+html.wk-hd #sb .sb-wo-legend{margin-top:clamp(6px, 1vh, 10px)}
+
+/* ---------- 4 正在播放：封面与信息块同高，横排不再缩成手机一条 ---------- */
+html.wk-hd #sb .sb-mu{
+  display:grid;
+  grid-template-columns:auto minmax(0, 1fr);
+  align-items:center;
+  gap:clamp(28px, 4vw, 56px);
+  width:min(100%, 980px);
+  margin:0 auto;
+}
+html.wk-hd #sb .sb-mu-art{
+  flex:none;
+  width:var(--hd-art);
+  height:var(--hd-art);
+  border-radius:var(--hd-radius);
+}
+html.wk-hd #sb .sb-mu-body{
+  width:100%;
+  height:auto;
+  min-height:var(--hd-art);
+  padding:0;
+  justify-content:space-between;
+}
+html.wk-hd #sb .sb-mu-t{font-size:clamp(22px, 2.5vw, 34px)}
+html.wk-hd #sb .sb-mu-rail,
+html.wk-hd #sb .sb-mu-row{width:min(100%, 480px)}
+
+/* ---------- 5 钟 + 日程：左右等高，日程行均分余下高度 ---------- */
+html.wk-hd #sb .sb-duo{
+  display:grid;
+  grid-template-columns:minmax(0, .75fr) minmax(0, 1.25fr);
+  align-items:stretch;
+  gap:var(--hd-gap);
+  height:100%;
+}
+html.wk-hd #sb .sb-duo-l{
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  min-width:0;
+  padding:clamp(8px, 1.4vh, 14px) 0;
+}
+html.wk-hd #sb .sb-big-sm{font-size:clamp(88px, 10.5vw, 150px)}
+html.wk-hd #sb .sb-duo-r{
+  width:100%;
+  height:100%;
+  min-height:0;
+  align-self:stretch;
+  display:flex;
+  flex-direction:column;
+  padding:clamp(24px, 2.8vw, 38px);
+}
+html.wk-hd #sb .sb-ag{
+  flex:1 1 auto;
+  min-height:0;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-width:none;
+}
+html.wk-hd #sb .sb-ag::-webkit-scrollbar{display:none}
+html.wk-hd #sb .sb-ag-row{
+  flex:1 1 0;
+  align-items:center;
+  min-height:calc(var(--sb-u) * 46px);
+}
+
+/* ---------- 6 CarPlay：保留极简 Hello，只把字号/提示位置按大屏重算 ---------- */
+html.wk-hd #sb .sb-hello-t{font-size:clamp(54px, 7.6vw, 112px)}
+html.wk-hd #sb .sb-hello-hint{
+  bottom:clamp(74px, 9vh, 108px);
+  font-size:clamp(12px, 1.15vw, 16px);
+}
+
+/* ---------- 竖屏 iPad：两栏一律改成上下两段，内容仍从左侧按钮通道右侧开始 ---------- */
+@media (orientation:portrait){
+  html.wk-hd #sb{
+    --hd-gap:clamp(12px, 2.2vh, 18px);
+    --hd-art:clamp(160px, 22vh, 220px);
+  }
+  html.wk-hd #sb .sb-p{
+    padding:clamp(72px, 6.8vh, 92px) clamp(18px, 4vw, 30px) clamp(58px, 6vh, 74px) clamp(62px, 8.5vw, 86px);
+  }
+  html.wk-hd #sb .sb-p[data-p="3"]{
+    padding:clamp(72px, 6.8vh, 92px) clamp(18px, 4vw, 30px) clamp(58px, 6vh, 74px) clamp(62px, 8.5vw, 86px);
+  }
+  html.wk-hd #sb .sb-p[data-p="6"]{padding:0}
+
+  html.wk-hd #sb .sb-cal{
+    grid-template-columns:1fr;
+    grid-template-rows:auto minmax(0, 1fr);
+    gap:var(--hd-gap);
+  }
+  html.wk-hd #sb .sb-cal-l{justify-content:flex-start}
+  html.wk-hd #sb .sb-cal-r{height:100%}
+
+  html.wk-hd #sb .sb-day-main{
+    grid-template-columns:1fr;
+    grid-template-rows:minmax(0, 1.15fr) minmax(0, .85fr);
+  }
+  html.wk-hd #sb .sb-day-r{padding:calc(var(--sb-u) * 4px) clamp(18px, 4vw, 30px)}
+
+  html.wk-hd #sb .sb-wo{
+    grid-template-columns:1fr;
+    grid-template-rows:minmax(0, .85fr) minmax(0, 1.15fr);
+  }
+
+  html.wk-hd #sb .sb-mu{
+    grid-template-columns:1fr;
+    grid-template-rows:auto minmax(0, 1fr);
+    justify-items:center;
+    align-items:center;
+    gap:clamp(18px, 3vh, 30px);
+  }
+  html.wk-hd #sb .sb-mu-art{justify-self:center}
+  html.wk-hd #sb .sb-mu-body{min-height:0;width:100%;justify-self:stretch}
+
+  html.wk-hd #sb .sb-duo{
+    grid-template-columns:1fr;
+    grid-template-rows:auto minmax(0, 1fr);
+  }
+  html.wk-hd #sb .sb-duo-l{justify-content:flex-start}
+}
+
+/* 音乐页：整组居中，信息块宽度收口；列表/搜索胶囊在 1366 上不能被挤成竖排 */
+html.wk-hd #sb .sb-mu{
+  width:100%;
+  grid-template-columns:auto minmax(0, 560px);
+  justify-content:center;
+}
+html.wk-hd #sb .sb-mu-body{max-width:560px}
+html.wk-hd #sb .sb-mu-rail,
+html.wk-hd #sb .sb-mu-row{width:100%;max-width:560px}
+html.wk-hd #sb .sb-mu-chip{
+  min-width:96px;
+  padding:0 clamp(16px, 1.5vw, 24px);
+  white-space:nowrap;
+  font-size:clamp(13px, 1.35vw, 17px);
+}
+html.wk-hd #sb .sb-mu-tools{flex:none}
+
+/* 行情页：主数字组垂直居中，BPM 固定到卡片底部，不让中间出现一整块无意义留白 */
+html.wk-hd #sb .sb-day-l{
+  position:relative;
+  justify-content:center;
+  padding-bottom:clamp(94px, 12vh, 128px);
+}
+html.wk-hd #sb .sb-day-l .sb-hr{
+  position:absolute;
+  left:clamp(26px, 3.2vw, 44px);
+  right:clamp(26px, 3.2vw, 44px);
+  bottom:clamp(26px, 3.2vw, 44px);
+  width:auto;
+  margin:0;
+}
+
+@media (orientation:portrait){
+  html.wk-hd #sb .sb-mu{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr);width:100%}
+  html.wk-hd #sb .sb-mu-body{max-width:none;width:100%}
+  html.wk-hd #sb .sb-mu-rail,html.wk-hd #sb .sb-mu-row{max-width:none}
+  html.wk-hd #sb .sb-day-l{padding-bottom:clamp(86px, 11vh, 112px)}
+}
+
+/* 日历页的 .sb-cal 就是页面容器本身，之前 padding-top:0 把它自己的安全区顶掉了；
+   这里补回与其它页一致的顶部安全区，避免月历卡贴到返回键那一行。 */
+html.wk-hd #sb .sb-cal{padding-top:clamp(76px, 7.2vh, 96px)}
+
+/* 竖屏日历：月历卡不再被 1fr 拉成一整块超高的空白格子，改为内容高度 + 固定行高 */
+@media (orientation:portrait){
+  html.wk-hd #sb .sb-cal{
+    grid-template-rows:auto auto;
+    align-content:start;
+  }
+  html.wk-hd #sb .sb-cal-r{
+    height:auto;
+    flex:none;
+  }
+  html.wk-hd #sb .sb-cal-r .sb-grid{
+    flex:none;
+    grid-auto-rows:clamp(44px, 6.2vh, 64px);
+  }
+}
+
+/* ================= v11：停止“卡片拉满整屏”，按内容高度排 =================
+   上一版把左右卡强制拉到内容区全高，日历格子、行情卡、日程卡被纵向拉长，
+   视觉上就是“卡片变形”。这一版恢复卡片的自然比例，只让页面在窗口里居中。 */
+html.wk-hd #sb{
+  --hd-status:max(env(safe-area-inset-top, 0px), 24px);
+  --hd-top:calc(var(--hd-status) + clamp(44px, 5vh, 56px));
+}
+
+/* 顶部系统状态栏/通知条：正文、返回键、天气头都不能压进去 */
+html.wk-hd #sb .sb-p{
+  padding-top:var(--hd-top);
+}
+html.wk-hd #sb .sb-p[data-p="3"]{padding-top:var(--hd-top)}
+html.wk-hd #sb .sb-cal{padding-top:var(--hd-top)}
+html.wk-hd #sb .sb-back{
+  left:max(env(safe-area-inset-left, 0px), 24px);
+  top:calc(var(--hd-status) + 6px);
+}
+html.wk-hd #sb .sb-day-hd{
+  top:calc(var(--hd-status) + 10px);
+}
+html.wk-hd #sb .sb-dots{
+  bottom:max(env(safe-area-inset-bottom, 0px), 18px);
+}
+
+/* 0 日历：月历卡按 6 行固定高度，不再拉成一整根长条；整组在页面里垂直居中 */
+html.wk-hd #sb .sb-cal{
+  align-content:center;
+  align-items:center;
+}
+html.wk-hd #sb .sb-cal-r{
+  height:auto;
+  min-height:0;
+}
+html.wk-hd #sb .sb-cal-r .sb-grid{
+  flex:none;
+  grid-auto-rows:clamp(38px, 4.6vh, 50px);
+}
+
+/* 1 行情：主卡整组给一个有限高度，数据行均分这个高度 */
+html.wk-hd #sb .sb-day-main{
+  height:clamp(360px, 54vh, 520px);
+  align-self:center;
+}
+html.wk-hd #sb .sb-day-l,
+html.wk-hd #sb .sb-day-r{height:100%}
+
+/* 3 体能：左右卡同样收口，心率曲线在有限高度里吃满 */
+html.wk-hd #sb .sb-wo{
+  height:clamp(380px, 56vh, 560px);
+  align-self:center;
+}
+html.wk-hd #sb .sb-wo-l,
+html.wk-hd #sb .sb-wo-r{height:100%}
+
+/* 5 时钟+日程：日程卡按内容高度，不再拉满整屏 */
+html.wk-hd #sb .sb-duo{
+  height:clamp(380px, 56vh, 560px);
+  align-self:center;
+}
+html.wk-hd #sb .sb-duo-l,
+html.wk-hd #sb .sb-duo-r{height:100%}
+html.wk-hd #sb .sb-ag{height:100%}
+
+/* 竖屏同样遵守自然高度，避免小屏上再次把卡片拉长 */
+@media (orientation:portrait){
+  html.wk-hd #sb .sb-day-main{height:clamp(320px, 46vh, 460px)}
+  html.wk-hd #sb .sb-wo{height:clamp(340px, 52vh, 520px)}
+  html.wk-hd #sb .sb-duo{height:clamp(340px, 52vh, 520px)}
+}
+
+/* ================= v12：左右卡严格同高 + 日程行不再被拉长 =================
+   1) 不再让每页内容区自己“撑满”；每页给一个明确的卡片高度，左右卡一起对齐。
+   2) 日程行改成固定 56px，2 条任务不再各占半张卡。 */
+html.wk-hd #sb .sb-day-main{
+  flex:0 0 auto;
+  height:clamp(360px, 52vh, 480px);
+  margin-block:auto;
+}
+html.wk-hd #sb .sb-day-l,
+html.wk-hd #sb .sb-day-r{height:100%}
+
+html.wk-hd #sb .sb-wo{align-content:center}
+html.wk-hd #sb .sb-wo-l,
+html.wk-hd #sb .sb-wo-r{height:clamp(340px, 50vh, 440px)}
+
+html.wk-hd #sb .sb-duo{align-content:center}
+html.wk-hd #sb .sb-duo-l,
+html.wk-hd #sb .sb-duo-r{height:clamp(300px, 43vh, 360px)}
+html.wk-hd #sb .sb-ag{flex:1 1 auto}
+html.wk-hd #sb .sb-ag-row{
+  flex:0 0 56px;
+  height:56px;
+  min-height:56px;
+  padding:0;
+}
+html.wk-hd #sb .sb-ag-more{margin-top:auto}
+
+/* 0 日历：左右卡同一条顶线/底线，月历在卡内均匀铺满 */
+html.wk-hd #sb .sb-cal{align-items:stretch}
+html.wk-hd #sb .sb-cal-l{height:100%}
+html.wk-hd #sb .sb-cal-r{
+  height:100%;
+  align-self:stretch;
+}
+html.wk-hd #sb .sb-cal-r .sb-grid{
+  flex:1 1 auto;
+  min-height:0;
+  grid-auto-rows:1fr;
+}
+
+/* ================= v13：统一安全区 + 日程/心率卡不再出现大段空档 ================= */
+html.wk-hd #sb{
+  /* iPad 顶部状态栏/通知条：至少 32px，再给正文留 56px 的呼吸区 */
+  --hd-status:max(env(safe-area-inset-top, 0px), 32px);
+  --hd-top:calc(var(--hd-status) + 56px);
+}
+html.wk-hd #sb .sb-p,
+html.wk-hd #sb .sb-p[data-p="3"],
+html.wk-hd #sb .sb-cal{padding-top:var(--hd-top)}
+html.wk-hd #sb .sb-back{top:calc(var(--hd-status) + 6px)}
+html.wk-hd #sb .sb-day-hd{top:calc(var(--hd-status) + 12px)}
+
+/* 胶囊里的文字：宁可按可用宽度省略，也不横向顶出胶囊 */
+html.wk-hd #sb .sb-cap{
+  box-sizing:border-box;
+  min-width:0;
+  max-width:100%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+html.wk-hd #sb .sb-day-hd .sb-cap{flex:0 1 auto}
+
+/* 3 体能：心率曲线固定高度，不再把中间拉成一块 200px 的空白 */
+html.wk-hd #sb .sb-wo{
+  height:clamp(340px, 50vh, 400px);
+}
+html.wk-hd #sb .sb-wo-l,
+html.wk-hd #sb .sb-wo-r{height:100%}
+html.wk-hd #sb .sb-wo-curve{
+  flex:0 0 clamp(60px, 9vh, 90px);
+  min-height:0;
+  height:auto;
+}
+html.wk-hd #sb .sb-wo-stats{
+  margin-top:clamp(8px, 1.2vh, 14px);
+  padding-top:0;
+}
+
+/* 5 日程：iPad 显示 4 条；行高固定 56，不再两条各占半张卡 */
+html.wk-hd #sb .sb-duo-l,
+html.wk-hd #sb .sb-duo-r{height:clamp(330px, 46vh, 380px)}
+html.wk-hd #sb .sb-ag-row{
+  flex:0 0 56px;
+  height:56px;
+  min-height:56px;
+}
+html.wk-hd #sb .sb-ag-more{margin-top:8px}
+
+/* v14：体能卡给足内部高度，统计和区间图例不再掉出卡片底边 */
+html.wk-hd #sb .sb-wo{height:clamp(400px, 54vh, 460px)}
+html.wk-hd #sb .sb-wo-l,
+html.wk-hd #sb .sb-wo-r{height:100%}
+
+/* ---- HD 玻璃（值全部来自 glass.css 的 --gls-*，这里只把 iPad 的实底换成同一套玻璃） ---- */
+/* 深/浅主题各有一条 :root[data-theme] .topbar 的 background:none，比这里优先级高，
+   所以顶栏要用同一条路径写回来，否则只剩模糊、没有底 */
+:root[data-theme="dark"].wk-hd .topbar,
+:root[data-theme="light"].wk-hd .topbar{
+  background:linear-gradient(180deg, var(--gls-card-hi) 0%, var(--gls-card-lo) 82%, transparent 100%);
+  -webkit-backdrop-filter:var(--gls-f);backdrop-filter:var(--gls-f);
+}
+html.wk-hd .sheet-head{
+  background:linear-gradient(180deg, var(--gls-card-hi) 0%, var(--gls-card-lo) 86%, transparent 100%);
+  -webkit-backdrop-filter:var(--gls-f);backdrop-filter:var(--gls-f);
+}
+html.wk-hd .stock-tabs-wrap{
+  background:linear-gradient(180deg, var(--gls-card-hi), var(--gls-card-lo));
+  -webkit-backdrop-filter:var(--gls-f);backdrop-filter:var(--gls-f);
+}
+html.wk-hd .sheet-body:has(.stock-tabs-wrap) .stock-tabs-wrap::before{
+  background:linear-gradient(180deg, var(--gls-card-hi), var(--gls-card-lo));
+  -webkit-backdrop-filter:var(--gls-f);backdrop-filter:var(--gls-f);
+}
+
+/* v15：体能页回到整屏高度，卡片用明确高度，内部统计不再被页面 padding 挤出去 */
+html.wk-hd #sb .sb-wo{height:100%}
+html.wk-hd #sb .sb-wo-l,
+html.wk-hd #sb .sb-wo-r{height:clamp(400px, 54vh, 460px)}
+
+/* v16：体能卡再收到内容高度，去掉卡底 100px 空档 */
+html.wk-hd #sb .sb-wo-l,
+html.wk-hd #sb .sb-wo-r{height:clamp(340px, 48vh, 380px)}
+
+/* v17：日历左栏所有卡片拉到同一右边界，不再一张长一张短 */
+html.wk-hd #sb #sb-cal-meta{
+  width:100%;
+  box-sizing:border-box;
+}
+html.wk-hd #sb .sb-cal-l{justify-items:stretch}
+
+/* v18：日历卡在 1366 上不再被拉成 544px，统一收到 480 以内 */
+html.wk-hd #sb .sb-cal-l,
+html.wk-hd #sb .sb-cal-r{height:clamp(420px, 60vh, 480px)}
+
+/* v19：日历页左栏内容顶对齐、BPM 胶囊压到与右卡同一条底边 */
+html.wk-hd #sb .sb-cal-l,
+html.wk-hd #sb .sb-cal-r{height:clamp(420px, 60vh, 520px)}
+html.wk-hd #sb .sb-cal-l{justify-content:flex-start}
+html.wk-hd #sb .sb-cal-hr{margin-top:auto}
+
+/* v20：日历心率胶囊与上卡同宽；行情右卡改为内容行高，不再把三行拉满整卡 */
+html.wk-hd #sb .sb-cal-hr{
+  width:100%;
+  box-sizing:border-box;
+}
+html.wk-hd #sb .sb-day-main{
+  height:clamp(360px, 46vh, 400px);
+}
+html.wk-hd #sb .sb-day-r{
+  justify-content:center;
+  align-content:center;
+}
+html.wk-hd #sb .sb-day-row{
+  flex:0 0 64px;
+  height:64px;
+  min-height:64px;
+  padding:0;
+}
+
+/* v21：行情右卡信息从顶部按 64px 行排列，空出来的区域保持空白，不再拉高每一行 */
+html.wk-hd #sb .sb-day-r{
+  justify-content:flex-start;
+  align-content:flex-start;
+}
+
+/* v22：日历页右栏至少占半屏；行情页两组卡片与其它页同外边界 */
+html.wk-hd #sb .sb-cal{
+  grid-template-columns:minmax(0, .84fr) minmax(0, 1.16fr);
+}
+html.wk-hd #sb .sb-day-main{
+  width:100%;
+  justify-self:stretch;
+  grid-template-columns:minmax(0, 1.7fr) minmax(0, 1fr);
+}
+
+/* v23：把工作页的「班次 + 农历 + 节假日」日历内容搬进待机日历卡；
+   外层仍是待机页的 sb-glass 卡，不套工作页的 .wk-cal 背景/阴影。 */
+html.wk-hd #sb .sb-cal-mh{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:10px;
+  margin:0 2px clamp(6px, 1vh, 10px);
+}
+html.wk-hd #sb .sb-cal-mh b{
+  font-size:clamp(15px, 1.6vw, 21px);
+  font-weight:600;
+  color:var(--sb-1);
+  letter-spacing:.01em;
+}
+html.wk-hd #sb .sb-cal-mh span{
+  font-size:clamp(10px, .9vw, 12px);
+  color:var(--sb-3);
+}
+html.wk-hd #sb .sb-gc.rich{
+  position:relative;
+  display:block;
+  height:auto;
+  min-height:0;
+  padding:0;
+  border-radius:calc(var(--sb-u) * 9px);
+  overflow:hidden;
+  font-size:inherit;
+}
+html.wk-hd #sb .sb-gc-d{
+  position:absolute;
+  left:clamp(6px, .55vw, 9px);
+  top:clamp(5px, .5vh, 7px);
+  font-size:clamp(10px, .95vw, 13px);
+  line-height:1;
+  color:var(--sb-2);
+  font-variant-numeric:tabular-nums;
+}
+html.wk-hd #sb .sb-gc.is-today .sb-gc-d{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:1.7em;
+  height:1.7em;
+  margin:-.35em 0 0 -.35em;
+  padding:.35em;
+  border-radius:999px;
+  background:var(--sb-inv-bg);
+  color:var(--sb-inv-fg);
+  font-weight:600;
+}
+html.wk-hd #sb .sb-gc-l{
+  position:absolute;
+  right:clamp(6px, .55vw, 9px);
+  top:clamp(6px, .55vh, 8px);
+  max-width:48%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:clamp(8px, .8vw, 10.5px);
+  line-height:1.2;
+  color:var(--sb-3);
+  font-style:normal;
+}
+html.wk-hd #sb .sb-gc-s{
+  position:absolute;
+  left:0;
+  right:0;
+  top:50%;
+  transform:translateY(-50%);
+  text-align:center;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  padding:0 6px;
+  font-size:clamp(11px, 1.05vw, 15px);
+  line-height:1.1;
+  font-weight:600;
+  color:var(--sb-1);
+}
+html.wk-hd #sb .sb-gc-dur{
+  position:absolute;
+  left:0;
+  right:0;
+  top:calc(50% + clamp(10px, 1.2vh, 13px));
+  text-align:center;
+  font-size:clamp(7.5px, .68vw, 9px);
+  line-height:1;
+  color:var(--sb-3);
+  font-style:normal;
+}
+html.wk-hd #sb .sb-gc-h{
+  position:absolute;
+  left:6px;
+  right:6px;
+  bottom:clamp(4px, .4vh, 6px);
+  text-align:center;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:clamp(7.5px, .68vw, 9px);
+  line-height:1;
+  color:var(--sb-3);
+  font-style:normal;
+}
+html.wk-hd #sb .sb-gc-x{
+  position:absolute;
+  right:5px;
+  bottom:4px;
+  color:var(--sb-3);
+  font-size:9px;
+  font-style:normal;
+}
+html.wk-hd #sb .sb-gc.off .sb-gc-s{color:var(--sb-3);font-weight:500}
+html.wk-hd #sb .sb-gc.wk .sb-gc-s{color:var(--sb-1)}
+
+/* v24：第 5 页左栏最底部那行状态改为相对整栏居中，
+   不再贴着左边缘、和上方时钟/日期胶囊错位。 */
+html.wk-hd #sb .sb-duo-f{
+  width:100%;
+  text-align:center;
+}
+
+/* ================= v25：HD 月历重新排版 ================= */
+/* 月历是这个页面主角：右栏 63%，左栏只做“今天”摘要。
+   左右仍是同一条顶线/底线，外边界不变。 */
+html.wk-hd #sb .sb-cal{
+  grid-template-columns:minmax(0, .74fr) minmax(0, 1.26fr);
+}
+html.wk-hd #sb .sb-cal-l,
+html.wk-hd #sb .sb-cal-r{
+  height:clamp(500px, 68vh, 560px);
+}
+html.wk-hd #sb .sb-cal-md{
+  font-size:clamp(46px, 6vw, 78px);
+}
+html.wk-hd #sb .sb-cal-mh{
+  align-items:center;
+  margin:0 4px clamp(10px, 1.5vh, 16px);
+}
+html.wk-hd #sb .sb-cal-mh b{
+  font-size:clamp(17px, 1.55vw, 22px);
+  font-weight:600;
+}
+html.wk-hd #sb .sb-cal-mh .sb-cal-lg{
+  display:flex;
+  align-items:center;
+  gap:clamp(7px, .8vw, 11px);
+  font-size:clamp(9px, .78vw, 11px);
+  color:var(--sb-3);
+  letter-spacing:.01em;
+}
+html.wk-hd #sb .sb-cal-mh .sb-cal-lg i{
+  font-style:normal;
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+}
+html.wk-hd #sb .sb-cal-mh .sb-cal-lg i::before{
+  content:"";
+  width:5px;height:5px;border-radius:50%;
+  background:var(--sb-3);
+  opacity:.65;
+}
+html.wk-hd #sb .sb-cal-mh .sb-cal-lg i:nth-child(2)::before{opacity:.9}
+html.wk-hd #sb .sb-cal-mh .sb-cal-lg i:nth-child(3)::before{opacity:.35}
+html.wk-hd #sb .sb-cal-mh .sb-cal-lg i:nth-child(4)::before{opacity:.55}
+html.wk-hd #sb .sb-cal-r .sb-grid-h{
+  margin-bottom:clamp(8px, 1.4vh, 14px);
+  font-size:clamp(10px, .82vw, 12px);
+}
+html.wk-hd #sb .sb-cal-r .sb-grid{
+  grid-auto-rows:1fr;
+  gap:clamp(4px, .45vw, 7px);
+}
+
+/* 单元格改成上下两段：上=日期+农历，下=班次+时长。
+   不再把班次放正中间、时长和箭头在底部乱飘。 */
+html.wk-hd #sb .sb-gc.rich{
+  position:relative;
+  display:block;
+  height:auto;
+  min-height:0;
+  padding:0;
+  border-radius:calc(var(--sb-u) * 11px);
+  overflow:hidden;
+}
+html.wk-hd #sb .sb-gc-d{
+  left:clamp(7px, .62vw, 10px);
+  top:clamp(6px, .65vh, 9px);
+  font-size:clamp(11px, 1vw, 14px);
+  font-weight:500;
+}
+html.wk-hd #sb .sb-gc.is-today .sb-gc-d{
+  min-width:1.65em;
+  height:1.65em;
+  margin:-.32em 0 0 -.32em;
+  padding:.32em;
+  font-weight:600;
+}
+html.wk-hd #sb .sb-gc-l{
+  right:clamp(7px, .62vw, 10px);
+  top:clamp(7px, .7vh, 10px);
+  max-width:46%;
+  font-size:clamp(8px, .7vw, 9.5px);
+  line-height:1.15;
+}
+html.wk-hd #sb .sb-gc-s{
+  left:clamp(7px, .62vw, 10px);
+  right:auto;
+  top:auto;
+  bottom:clamp(7px, .75vh, 10px);
+  transform:none;
+  text-align:left;
+  padding:0;
+  max-width:72%;
+  font-size:clamp(9.5px, .9vw, 12.5px);
+  line-height:1.05;
+  font-weight:600;
+  letter-spacing:.02em;
+}
+html.wk-hd #sb .sb-gc-dur{
+  right:clamp(7px, .62vw, 10px);
+  left:auto;
+  top:auto;
+  bottom:clamp(8px, .8vh, 10px);
+  text-align:right;
+  font-size:clamp(7.5px, .65vw, 9px);
+  line-height:1.05;
+}
+html.wk-hd #sb .sb-gc-h,
+html.wk-hd #sb .sb-gc-x{display:none}
+html.wk-hd #sb .sb-gc.off .sb-gc-s{color:var(--sb-3);font-weight:400}
+html.wk-hd #sb .sb-gc.wk .sb-gc-s{color:var(--sb-1)}
+
+/* ================= v26：Apple Calendar 式月历，整体收一档 ================= */
+/* 不再按旧的双栏比例硬撑：月历 60%，左栏 40%，卡高 450–500，
+   让页面四角重新有呼吸。 */
+html.wk-hd #sb .sb-cal{
+  grid-template-columns:minmax(0, .80fr) minmax(0, 1.20fr);
+}
+html.wk-hd #sb .sb-cal-l,
+html.wk-hd #sb .sb-cal-r{
+  height:clamp(450px, 58vh, 500px);
+}
+html.wk-hd #sb .sb-cal-md{
+  font-size:clamp(44px, 5.6vw, 74px);
+}
+/* 月份头回到 Apple 日历的“一条安静标题”，不再挂班次图例 */
+html.wk-hd #sb .sb-cal-mh{
+  justify-content:center;
+  align-items:center;
+  margin:0 4px clamp(9px, 1.3vh, 14px);
+  padding-bottom:clamp(8px, 1.1vh, 11px);
+  border-bottom:.5px solid color-mix(in srgb, var(--sb-3) 18%, transparent);
+}
+html.wk-hd #sb .sb-cal-mh b{
+  font-size:clamp(17px, 1.5vw, 21px);
+  font-weight:600;
+  letter-spacing:.02em;
+}
+html.wk-hd #sb .sb-cal-mh .sb-cal-lg{display:none}
+html.wk-hd #sb .sb-cal-r .sb-grid-h{
+  margin-bottom:clamp(7px, 1.2vh, 12px);
+  font-size:clamp(10px, .8vw, 12px);
+  letter-spacing:.06em;
+}
+/* 单元格：日期在上、农历紧随日期，班次与时长在底部；
+   不再把农历顶到右上角，读起来是 Apple 日历的一列日期。 */
+html.wk-hd #sb .sb-gc-d{
+  left:clamp(8px, .7vw, 11px);
+  top:clamp(5px, .55vh, 8px);
+  font-size:clamp(12px, 1.05vw, 15px);
+  font-weight:500;
+}
+html.wk-hd #sb .sb-gc-l{
+  left:clamp(8px, .7vw, 11px);
+  right:auto;
+  top:clamp(25px, 2.3vh, 28px);
+  max-width:82%;
+  font-size:clamp(8px, .7vw, 9.5px);
+  line-height:1.1;
+  text-align:left;
+}
+html.wk-hd #sb .sb-gc-s{
+  left:clamp(8px, .7vw, 11px);
+  bottom:clamp(7px, .7vh, 9px);
+  max-width:70%;
+  font-size:clamp(9px, .84vw, 11.5px);
+}
+html.wk-hd #sb .sb-gc-dur{
+  right:clamp(8px, .7vw, 11px);
+  bottom:clamp(7px, .7vh, 9px);
+  font-size:clamp(7.5px, .63vw, 8.5px);
+}
+
+/* v27：卡收小后网格高度只有约 50px，农历回到日期同一行的右端，
+   不再和底部班次叠在一起；仍保持“日期在上、班次在下”的两段结构。 */
+html.wk-hd #sb .sb-gc-l{
+  left:auto;
+  right:clamp(8px, .7vw, 11px);
+  top:clamp(6px, .62vh, 9px);
+  max-width:44%;
+  font-size:clamp(8px, .7vw, 9.5px);
+  line-height:1.15;
+  text-align:right;
+}
+
+/* v29：卡再收一档后，月历网格要跟着卡高走，不能留下 38px 的死行高；
+   480–520 的卡高刚好让六行日期有呼吸，又不至于把整页压满。 */
+html.wk-hd #sb .sb-cal-l,
+html.wk-hd #sb .sb-cal-r{
+  height:clamp(480px, 60vh, 520px);
+}
+html.wk-hd #sb .sb-cal-r .sb-grid{
+  flex:1 1 auto;
+  min-height:0;
+  grid-auto-rows:1fr;
+  align-content:stretch;
+}
+
+/* ================= v31：右侧窄版 Apple 月历；左侧卡片等距 ================= */
+/* 右卡宽度收到原来约一半，做成一张竖向的 iPhone 月历卡；
+   卡高不跟左列拉齐，视觉上更像一张悬浮的日历。 */
+html.wk-hd #sb .sb-cal{
+  grid-template-columns:minmax(0, 1fr) minmax(0, .72fr);
+  align-items:start;
+}
+html.wk-hd #sb .sb-cal-l{
+  height:clamp(480px, 60vh, 520px);
+  justify-content:space-evenly;
+  gap:0;
+}
+html.wk-hd #sb .sb-cal-r{
+  height:clamp(320px, 46vh, 400px);
+  padding:clamp(16px, 1.8vw, 24px);
+}
+/* 左列：日期、星期、交易日、信息卡、心率自上而下等距；不靠 margin 硬顶 */
+html.wk-hd #sb .sb-cal-md,
+html.wk-hd #sb .sb-cal-wk,
+html.wk-hd #sb #sb-cal-tr,
+html.wk-hd #sb #sb-cal-meta,
+html.wk-hd #sb .sb-cal-hr{margin-top:0}
+html.wk-hd #sb .sb-cal-hr{margin-bottom:0}
+/* 月份标题：年小、月大，像 Apple 日历的“五月” */
+html.wk-hd #sb .sb-cal-mh{
+  justify-content:flex-start;
+  align-items:baseline;
+  gap:7px;
+  margin:0 0 clamp(8px, 1.2vh, 12px);
+  padding-bottom:clamp(6px, .9vh, 9px);
+  border-bottom:.5px solid color-mix(in srgb, var(--sb-3) 18%, transparent);
+}
+html.wk-hd #sb .sb-cal-year{
+  font-size:clamp(9px, .78vw, 11px);
+  color:var(--sb-3);
+  letter-spacing:.04em;
+}
+html.wk-hd #sb .sb-cal-mh b{
+  font-size:clamp(23px, 2.4vw, 34px);
+  font-weight:600;
+  line-height:1;
+}
+html.wk-hd #sb .sb-cal-r .sb-grid-h{
+  margin-bottom:clamp(5px, 1vh, 9px);
+  font-size:clamp(8.5px, .72vw, 10.5px);
+}
+html.wk-hd #sb .sb-cal-r .sb-grid{
+  gap:clamp(3px, .35vw, 5px);
+  flex:1 1 auto;
+  min-height:0;
+  grid-auto-rows:1fr;
+  align-content:stretch;
+}
+
+/* Apple 日历格：日期大、农历紧随其下、班次缩成右上角小字。
+   时长和额外脚注都收掉，避免窄卡里堆三层。 */
+html.wk-hd #sb .sb-gc.rich{
+  overflow:hidden;
+  border-radius:calc(var(--sb-u) * 10px);
+}
+html.wk-hd #sb .sb-gc-d{
+  left:clamp(6px, .55vw, 9px);
+  top:clamp(4px, .45vh, 6px);
+  font-size:clamp(14px, 1.35vw, 19px);
+  line-height:1;
+  font-weight:500;
+}
+html.wk-hd #sb .sb-gc.is-today .sb-gc-d{
+  min-width:1.32em;
+  height:1.32em;
+  margin:-.22em 0 0 -.22em;
+  padding:.22em;
+  font-weight:600;
+}
+html.wk-hd #sb .sb-gc-l{
+  left:clamp(6px, .55vw, 9px);
+  right:auto;
+  top:clamp(24px, 2.3vh, 29px);
+  max-width:76%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  text-align:left;
+  font-size:clamp(7.5px, .64vw, 9px);
+  line-height:1;
+  color:var(--sb-3);
+}
+html.wk-hd #sb .sb-gc.is-today .sb-gc-l{
+  top:clamp(28px, 2.7vh, 33px);
+}
+html.wk-hd #sb .sb-gc-s{
+  left:auto;
+  right:clamp(5px, .48vw, 8px);
+  top:clamp(4px, .45vh, 6px);
+  bottom:auto;
+  transform:none;
+  max-width:42%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  text-align:right;
+  font-size:clamp(7.5px, .68vw, 9.5px);
+  line-height:1.1;
+  font-weight:500;
+  color:var(--sb-2);
+  letter-spacing:0;
+}
+html.wk-hd #sb .sb-gc.off .sb-gc-s{color:var(--sb-3);font-weight:400}
+html.wk-hd #sb .sb-gc-dur,
+html.wk-hd #sb .sb-gc-h,
+html.wk-hd #sb .sb-gc-x{display:none}
+
+/* 缩成半张面积后，右卡在右列垂直居中，底边与左列心率胶囊接近 */
+html.wk-hd #sb .sb-cal-r{align-self:center}
+
+/* ================= v33：第0页左右留白与中缝；歌词层头部去背板、按钮同行 ================= */
+/* p0：左列收窄，中缝加大，左右外边距对称；不再让日期和卡片横着铺满整页 */
+html.wk-hd #sb .sb-cal{
+  padding-left:clamp(72px, 8.2vw, 112px);
+  padding-right:clamp(72px, 8.2vw, 112px);
+  column-gap:clamp(40px, 4.8vw, 64px);
+}
+
+/* 整屏歌词：HD 的通用 .sheet-head 带了一层整幅 backdrop-filter，
+   在歌词透明头部上会变成横贯屏幕的“大背景板”。这里只对歌词层关掉。
+   同时把分栏开关提到第一行，和关闭按钮并排，去掉上下堆叠。 */
+html.wk-hd #sb .sb-mlyr .sheet-head{
+  background:none !important;
+  -webkit-backdrop-filter:none !important;
+  backdrop-filter:none !important;
+  border:0;
+  box-shadow:none;
+}
+html.wk-hd #sb .sb-mlyr .sheet-head b{
+  max-width:min(42vw, 360px);
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+html.wk-hd #sb .sb-mlyr .sheet-head .icon-btn{
+  flex:0 0 auto;
+}
+html.wk-hd #sb .sb-mlyr-side{
+  top:max(12px, calc(env(safe-area-inset-top) + 10px));
+  right:calc(max(20px, calc(env(safe-area-inset-right) + 18px)) + 44px);
+  width:36px;
+  height:36px;
+}
+
+/* ================= v34：HD 电量那一行贴到返回键右侧，与返回键同高 ================= */
+/* .sb-top 原本沿用了 iPhone 的 top 10u，电池会浮在返回键上方；
+   HD 下把这一行压到返回键的垂直中线，并从返回键右侧 56px 起排。 */
+html.wk-hd #sb .sb-top{
+  left:calc(max(env(safe-area-inset-left, 0px), 24px) + 56px);
+  /* 返回键 top = hd-status + 6、高 38u；这一行高 38px，要跟它同心：top = 6 + (38u - 38)/2 */
+  top:calc(var(--hd-status) + 6px + (calc(var(--sb-u) * 38px) - 38px) / 2);
+  height:38px;
+  align-items:center;
+}
+html.wk-hd #sb .sb-batt{
+  margin-left:0;
+}
+
+/* ================= v35：统一所有待机整屏弹层头部，去掉整幅背板 ================= */
+/* 和歌词层同一个根因：HD 全局给 .sheet-head 上了渐变底 + 整幅 backdrop-filter，
+   但这些整屏弹层的头部本来是透明、悬浮的，底下的内容会从胶囊后面穿过去。
+   这里一次性覆盖全部整屏弹层，只保留标题/按钮自身的玻璃胶囊。 */
+html.wk-hd #sb :is(.sb-mlyr,.sb-mup,.sb-peek,.sb-set,.sb-due,.sb-cp-sheet) .sheet-head{
+  background:none !important;
+  -webkit-backdrop-filter:none !important;
+  backdrop-filter:none !important;
+  border:0;
+  box-shadow:none;
+}
+
+/* ================= v36：HD 歌词封面从整屏垂直居中改到顶部左栏 ================= */
+/* 歌词是分栏布局：标题在左上，歌词在右侧。封面继续整屏居中会悬在半空，
+   和标题、歌词都不成一条线。这里把它抬到标题下方，和歌词列表同一对视区。 */
+html.wk-hd #sb .sb-mlyr-pane{
+  /* 左侧封面栏：从标题下方开始，到屏幕底部，整块区域上下左右居中 */
+  top:calc(max(12px, calc(env(safe-area-inset-top) + 10px)) + 50px);
+  bottom:0;
+  width:calc(var(--sb-u) * 272px);
+  padding:0 calc(var(--sb-u) * 13px);
+  box-sizing:border-box;
+  align-items:center;
+  justify-content:center;
+}
+
+/* ================= v37：HD 待机不显示电量 ================= */
+/* 用户明确：HD 待机不需要电量。这里只隐藏 HD 的电池行，
+   iPhone 和非待机页面完全不受影响；返回键、专注胶囊仍按原位置排。 */
+html.wk-hd #sb .sb-batt{
+  display:none !important;
+}
+
+/* ================= v36：HD 主站顶栏的心率条铺满整条 =================
+   手机端那颗迷你波形按 iOS 习惯封顶 96px；HD 的顶栏胶囊宽得多，
+   波形停在 96 就剩一大片空白，看起来像「没顶满」。这里放开上限让它撑满。 */
+html.wk-hd .topbar .top-mid .sb-hint{height:100%}
+html.wk-hd .topbar .top-mid .sb-hint-hr{flex:1 1 auto;min-width:0}
+html.wk-hd .topbar .top-mid .sb-hint-hr svg{max-width:none;flex:1 1 auto;height:clamp(12px, 1.6vh, 16px)}
+html.wk-hd .topbar .top-mid .sb-hint-l{margin-left:12px}
+
+/* ================= v41：HD 歌词封面在左栏内再向右让出一些 ================= */
+/* 左栏居中会把封面压得太靠屏幕左沿，这里只在 HD 下给封面一个右移量，
+   封面尺寸、左栏边界和歌词分栏起点都不动。 */
+html.wk-hd #sb .sb-mlyr-card{
+  left:clamp(56px, 6vw, 84px);
+}
+
+/* ================= v42：HD 歌词封面再右移一点、上移一点 ================= */
+html.wk-hd #sb .sb-mlyr-card{
+  left:clamp(80px, 9vw, 120px);
+  top:calc(-1 * clamp(28px, 3vw, 44px));
+}
+
+/* ================= v38：HD 第 0 页左栏收到原来的 3/5，月历再放大一档 ================= */
+/* 左栏 627 → 561 → 337px（比上一版再收 2/5），多出来的宽度全给日历列；
+   月历卡从 517×486 长到 741×512，卡底仍用 align-self:end 钉在左栏底边。
+   左栏变窄后日期行会顶出卡片，字号同步收一档（74 → 66）保证仍是单行。 */
+html.wk-hd #sb .sb-cal{
+  grid-template-columns:minmax(0, 1fr) minmax(0, 2.2fr);
+  align-items:stretch;
+}
+html.wk-hd #sb .sb-cal-r{
+  width:100%;
+  height:min(100%, clamp(400px, 50vh, 520px));
+  align-self:end;
+  padding:clamp(18px, 2vw, 26px);
+}
+html.wk-hd #sb .sb-cal-r .sb-grid{
+  flex:1 1 auto;
+  min-height:0;
+  grid-auto-rows:1fr;
+  align-content:stretch;
+}
+html.wk-hd #sb .sb-cal-md{
+  font-size:clamp(40px, 5vw, 66px);
+}
+
+/* ================= v40：HD 工作页的实时任务行从导航栏上方挪到屏幕最底部 ================= */
+/* 原来的 .wk-next 在 HD 被抬到胶囊上方 86px，和版本号、新建按钮挤在同一条带上。
+   现在改为贴屏幕最底、落在导航栏下方（和 iPhone 的写法一致）：
+   底部偏移取安全区本身，文字正好落在胶囊下沿与屏幕边缘之间那条窄带里。 */
+html.wk-hd .wk-next{
+  bottom:max(2px, env(safe-area-inset-bottom, 0px));
+  z-index:32;
+}

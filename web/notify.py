@@ -73,7 +73,7 @@ def due_tasks(now: datetime, horizon_min: int) -> list[dict]:
     c.row_factory = sqlite3.Row
     try:
         rows = c.execute(
-            "SELECT id, title, note, due_at, done FROM work_tasks "
+            "SELECT id, title, note, due_at, snooze_at, done FROM work_tasks "
             "WHERE done = 0 AND due_at >= ? AND due_at <= ? ORDER BY due_at",
             (lo, hi),
         ).fetchall()
@@ -83,6 +83,17 @@ def due_tasks(now: datetime, horizon_min: int) -> list[dict]:
     finally:
         c.close()
     return [dict(r) for r in rows]
+
+
+def _effective_due(t: dict) -> str:
+    """这次到底几点该响：用户「晚点提醒」挪过的，以 snooze_at 为准。
+
+    snooze_at 只推迟「这一次」，不动 due_at；以前脚本只读 due_at，
+    所以推迟过的任务照样按原时间提前响，和网页上的表现对不上。
+    """
+    due = (t.get("due_at") or "").strip()[:16]
+    sn = (t.get("snooze_at") or "").strip()[:16]
+    return sn if sn and sn > due else due
 
 
 DAILY_PATH = BASE / "data" / "daily.json"
@@ -110,23 +121,31 @@ def plan(now: datetime, conf: dict) -> list[dict]:
     st = _state()
     out: list[dict] = []
     for t in tasks:
-        due = datetime.strptime(t["due_at"], "%Y-%m-%d %H:%M").replace(tzinfo=BJ)
+        due_s = _effective_due(t)
+        if not due_s:
+            continue
+        due = datetime.strptime(due_s, "%Y-%m-%d %H:%M").replace(tzinfo=BJ)
         remain = (due - now).total_seconds() / 60.0
         if remain < 0:
             continue
         th = _pick_threshold(remain, thresholds)
         if th is None:
             continue
-        key = f"{t['id']}:{th}"
+        # key 带上这次的实际截止时刻：任务改期/推迟后是另一回事，得重新提醒；
+        # 只按 id+阈值去重会让改过期的任务在 3 天内彻底静默。
+        key = f"{t['id']}:{th}:{due_s}"
         if key in st.get("sent", {}):
             continue
         mins = int(round(remain))
+        snoozed = due_s != (t.get("due_at") or "").strip()[:16] and due_s
         out.append({
             "key": key,
+            "task_id": t["id"],
             "title": t["title"],
-            "due": t["due_at"],
+            "due": due_s,
             "remain": mins,
-            "body": f"还有 {mins} 分钟 · {t['due_at'][11:]} 截止",
+            "body": f"还有 {mins} 分钟 · {due_s[11:]} 截止（已推迟）" if snoozed
+                    else f"还有 {mins} 分钟 · {due_s[11:]} 截止",
             "urgent": th <= 1,
         })
     # 每日提醒：App 没开着的时候由这一支兜住（同一分钟内只发一次，key 带日期）
@@ -182,6 +201,70 @@ def _ntfy(cfg: dict, title: str, body: str, urgent: bool) -> bool:
     return True
 
 
+def _channels(conf: dict) -> list[str]:
+    """真正可用的通道。注意 bark 只填了 url 不算——key 空就是发不出去。"""
+    got: list[str] = []
+    if ((conf.get("bark") or {}).get("key") or "").strip():
+        got.append("bark")
+    nf = conf.get("ntfy") or {}
+    if (nf.get("server") or "").strip() and (nf.get("topic") or "").strip():
+        got.append("ntfy")
+    return got
+
+
+_KIND_LABEL = {"up": "涨到", "down": "跌到", "pct": "日涨跌幅超"}
+
+
+def _appkey() -> str:
+    """服务器上的只读 appkey，用它在 127.0.0.1 调自己的接口。"""
+    for p in (BASE / "data" / "appkey", BASE / "data" / "secret"):
+        try:
+            v = p.read_text(encoding="utf-8").strip()
+            if v:
+                return v
+        except OSError:
+            continue
+    return ""
+
+
+def price_events() -> list[dict]:
+    """让服务端自己算一遍价格提醒。
+
+    前端那支 60 秒轮询要求页面可见，App 一退到后台就停，所以「关掉 App 永远收不到
+    价格提醒」。这里复用同一支接口：触发判定、armed 与 30 分钟间隔都由 store 保证，
+    和前端同时跑也不会重复发。
+    """
+    key = _appkey()
+    if not key:
+        return []
+    try:
+        # appkey 走请求头而不是 ?k=，否则每分钟一条的 URL 会把凭证抄进 access log
+        r = requests.get("http://127.0.0.1:8100/api/v1/price-alerts/check",
+                         headers={"X-App-Key": key}, timeout=12)
+        if r.status_code != 200:
+            return []
+        return list((r.json() or {}).get("events") or [])
+    except Exception as e:
+        # 别把带 appkey 的完整 URL 写进日志
+        log.warning("价格提醒检查失败：%s", str(e).replace(key, "***")[:140])
+        return []
+
+
+def _mark_notified(task_id: int, when: str) -> None:
+    """推出去之后在任务上打戳，别的通道（前端 15 秒轮询）别再为同一条响一遍。
+
+    只写空值，不碰前端已经写过的 notified_at。
+    """
+    try:
+        c = sqlite3.connect(DB_PATH, timeout=5)
+        c.execute("UPDATE work_tasks SET notified_at=? WHERE id=? "
+                  "AND (notified_at IS NULL OR notified_at='')", (when, task_id))
+        c.commit()
+        c.close()
+    except sqlite3.Error as e:
+        log.warning("写 notified_at 失败：%s", e)
+
+
 def send(title: str, body: str, urgent: bool, conf: dict, dry: bool) -> list[str]:
     cfg = conf or {}
     done: list[str] = []
@@ -206,11 +289,26 @@ def main() -> None:
     ap.add_argument("--dry", action="store_true", help="只打印")
     ap.add_argument("--test", action="store_true", help="发一条测试")
     ap.add_argument("--list", action="store_true", help="列出今天剩余任务")
+    ap.add_argument("--doctor", action="store_true", help="自检：开关 / 通道 / 待发条数")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     conf = _conf()
     now = datetime.now(BJ).replace(second=0, microsecond=0)
+
+    if args.doctor:
+        st = _state().get("sent", {})
+        ch = _channels(conf)
+        waiting = plan(now, conf)
+        print("enabled:", bool(conf.get("enabled")))
+        print("通道   :", ", ".join(ch) or "无（外部推送一条都发不出去）")
+        print("阈值   :", conf.get("thresholds") or [30, 10, 1])
+        print("已发记录:", len(st), "条")
+        print("这一分钟待发:", len(waiting), "条")
+        print("价格提醒事件:", len(price_events()), "条（服务端每分钟自检一次）")
+        for it in waiting[:6]:
+            print("  -", it["due"], it["title"], "→", it["body"])
+        return
 
     if args.list:
         for t in due_tasks(now, 24 * 60):
@@ -227,24 +325,61 @@ def main() -> None:
         return
 
     if args.tick and not conf.get("enabled"):
-        return                      # 未启用：安静退出，别在日志里刷存在感
+        # 推送开关关着也要算价格提醒：那是站内事件，进「提醒中心」；
+        # 以前只有 App 前台轮询才会触发，关掉 App 就等于没有价格提醒。
+        if not conf.get("price_check", True):
+            return
+        price_events()
+        return                      # 不推系统通知，别在日志里刷存在感
 
+    ch = _channels(conf)
     items = plan(now, conf)
-    if not items:
-        if args.dry:
+
+    if args.dry:
+        if not items:
             print("这一分钟没有要发的提醒")
+            return
+        for it in items:
+            print(f"{it['due']} {it['title']} → {it['body']} [dry，未发送]")
+        return
+
+    # 价格提醒先算：只写 alert_events，有没有通道只影响能不能顺带推出去
+    fired = price_events()
+
+    # 开关开着、通道却是空的：以前是静默空转，日志里什么都看不到。
+    # 每天只喊一次，别把 journald 刷满。
+    if not ch:
+        st = _state()
+        k = "warn:" + now.strftime("%Y-%m-%d")
+        if k not in st.get("sent", {}):
+            log.warning("notify 已启用但没有可用通道（bark.key / ntfy server+topic 皆空），"
+                        "提醒只写进站内记录，不会推到系统通知")
+            st.setdefault("sent", {})[k] = time.time()
+            _save_state(st)
         return
 
     st = _state()
     for it in items:
-        got = send(it["title"], it["body"], it["urgent"], conf, dry=args.dry)
+        got = send(it["title"], it["body"], it["urgent"], conf, dry=False)
         print(f"{it['due']} {it['title']} → {it['body']} {got}")
-        if args.dry:
-            continue
         if got:
             st.setdefault("sent", {})[it["key"]] = time.time()
-    if not args.dry:
-        _save_state(st)
+            if conf.get("mark_notified", True) and it.get("task_id"):
+                # 系统通知已经响过一次，前端进 App 不该再为同一条再响一遍
+                _mark_notified(int(it["task_id"]), now.strftime("%Y-%m-%d %H:%M"))
+
+    for ev in fired:
+        k = f"a:{ev.get('id')}"
+        if k in st.get("sent", {}):
+            continue
+        label = _KIND_LABEL.get(str(ev.get("kind") or ""), "提醒")
+        title = f"{ev.get('name') or ev.get('code')} {label}"
+        got = send(title, f"现价 {ev.get('price')}", True, conf, dry=False)
+        print(f"价格 {ev.get('code')} {label} → {got}")
+        if got:
+            st.setdefault("sent", {})[k] = time.time()
+
+    _save_state(st)
 
 
 if __name__ == "__main__":

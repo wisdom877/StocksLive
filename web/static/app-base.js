@@ -49,6 +49,49 @@ function openThemeSheet() {
     setTimeout(closeSheet, 160);
   }));
 }
+
+/* 玻璃质感：四档单选就放在「更多」里。样式全在 glass.css，这里只负责把 GLASS 的选择画出来（GLASS:BEGIN） */
+function openGlassSheet() {
+  if (!window.GLASS) return;
+  openSheet("玻璃质感", GLASS.html());
+  GLASS.bind(document);
+}
+/* GLASS:END */
+
+/* 修改访问密码：先验原密码，再写新密码；成功后当前会话继续有效 */
+function openPasswordSheet() {
+  openSheet("修改密码", `<form id="pw-form" class="pw-form" autocomplete="off">
+    <div class="field"><label>原密码</label><input id="pw-old" type="password" autocomplete="current-password" placeholder="先验证当前密码" required></div>
+    <div class="field"><label>新密码</label><input id="pw-new" type="password" autocomplete="new-password" placeholder="至少 8 位" required></div>
+    <div class="field"><label>确认新密码</label><input id="pw-confirm" type="password" autocomplete="new-password" placeholder="再输一次" required></div>
+    <p class="pw-err" id="pw-err"></p>
+    <p class="pw-note">改完不用重新登录，新密码下次登录时生效。</p>
+    <div class="sheet-actions"><button type="button" class="btn ghost" data-close>取消</button><button type="submit" class="btn primary" id="pw-save">保存</button></div>
+  </form>`);
+  setTimeout(() => { try { $("#pw-old").focus(); } catch (e) {} }, 80);
+  $("#pw-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const old = $("#pw-old").value;
+    const next = $("#pw-new").value;
+    const err = $("#pw-err");
+    err.textContent = "";
+    if (next.length < 8) { err.textContent = "新密码至少 8 位"; return; }
+    if (next !== $("#pw-confirm").value) { err.textContent = "两次输入的新密码不一致"; return; }
+    const btn = $("#pw-save");
+    btn.disabled = true;
+    btn.textContent = "验证中…";
+    try {
+      await api("password", { method: "POST", body: { old, new: next } });
+      try { document.activeElement && document.activeElement.blur(); } catch (e) {}
+      closeSheet();
+      toast("密码已更新");
+    } catch (ex) {
+      err.textContent = ex.message || "修改失败";
+      btn.disabled = false;
+      btn.textContent = "保存";
+    }
+  });
+}
 /* 有些 WebView 不派发 prefers-color-scheme 的 change 事件，切了系统外观页面就一直停在旧色。
    这里在「跟随系统」时自己做兜底：回到前台时对齐一次，平时每 2 秒比一次，不一致才重算。 */
 function themeRefreshAuto() {
@@ -61,7 +104,8 @@ try {
   mq.addEventListener ? mq.addEventListener("change", themeRefreshAuto) : mq.addListener(themeRefreshAuto);
 } catch (e) { /* 没有 matchMedia 就只用手选 */ }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) themeRefreshAuto(); });
-setInterval(themeRefreshAuto, 2000);
+/* 原来这里有个 2 秒 setInterval 空转查主题：matchMedia 的 change 回调 + 回前台已经够了，
+   去掉它等于少一个 1Hz/2Hz 的唤醒源（手机上一直醒着就是热。 */
 applyTheme(themeMode());
 
 /* 新闻功能已按要求下线（2026-10-29）：页面容器在 index.html 里整段注释，
@@ -395,7 +439,22 @@ function memoSet(key, data) {
 function liveTtl(base) {
   return marketOpen() ? base : base * 8;
 }
+const _inflightGet = new Map();
+
 async function api(path, opts = {}, timeout = 15000) {
+  const method0 = (opts.method || "GET").toUpperCase();
+  if (method0 !== "GET") return _apiOnce(path, opts, timeout);
+  // 同一路径正在飞就复用同一个 promise：切 tab / 滚动 / 回前台同时触发时不会各发一条
+  const infl = _inflightGet.get(path);
+  if (infl) return infl;
+  const pr = _apiOnce(path, opts, timeout);
+  _inflightGet.set(path, pr);
+  pr.then(() => { if (_inflightGet.get(path) === pr) _inflightGet.delete(path); },
+         () => { if (_inflightGet.get(path) === pr) _inflightGet.delete(path); });
+  return pr;
+}
+
+async function _apiOnce(path, opts = {}, timeout = 15000) {
   const method = (opts.method || "GET").toUpperCase();
   const isGet = method === "GET";
   const idem = isGet || !!opts.idempotent;
@@ -458,16 +517,26 @@ async function api(path, opts = {}, timeout = 15000) {
 }
 
 /* ---------- auth ---------- */
+var __splashAt = performance.now();
+function hideSplash() {
+  const sp = $("#splash"); if (!sp) return;
+  // 让手写 Wisdom 至少完整写完一遍，再淡出；不能一登录成功就把启动层瞬删。
+  const left = Math.max(0, 1500 - (performance.now() - __splashAt));
+  setTimeout(() => {
+    sp.classList.add("out");
+    setTimeout(() => { if (sp.parentNode) sp.remove(); }, 480);
+  }, left);
+}
 function showLogin() {
   if (window.__bootGuard) { clearTimeout(window.__bootGuard); try { sessionStorage.removeItem("bootReload"); } catch (e) {} }
-  const sp = $("#splash"); if (sp) sp.remove();
+  hideSplash();
   $("#app").classList.add("hidden");
   $("#login").classList.remove("hidden");
   stopPoll();
 }
 function showApp() {
   if (window.__bootGuard) { clearTimeout(window.__bootGuard); try { sessionStorage.removeItem("bootReload"); } catch (e) {} }
-  const sp = $("#splash"); if (sp) sp.remove();
+  hideSplash();
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");
   if (typeof sbAutoRestore === "function") sbAutoRestore();
@@ -765,7 +834,7 @@ function initTabDrag() {
   const btns = () => [...nav.querySelectorAll("button")];
   const reduceMotion = () =>
     !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-  let drag = null, moved = false, tickIdx = -1;
+  let drag = null, moved = false;
 
   function measure() {
     const nr = nav.getBoundingClientRect();
@@ -792,9 +861,6 @@ function initTabDrag() {
     thumb.classList.toggle("anim", !!animate && !reduceMotion());
     thumb.style.left = `${left}px`;
   }
-  function tick() {
-    try { if (navigator.vibrate) navigator.vibrate(6); } catch (e) { /* 静默 */ }
-  }
   window.updateTabThumb = function (animate) {
     const m = measure();
     const i = activeIdx();
@@ -802,7 +868,6 @@ function initTabDrag() {
     if (!r) return;
     thumb.style.width = `${r.w}px`;
     setThumb(r.l, animate);
-    tickIdx = i;
     btns().forEach((b, j) => b.classList.toggle("near", j === i));
   };
   const lift = (on) => thumb.classList.toggle("lift", on);
@@ -821,7 +886,6 @@ function initTabDrag() {
       vx: 0, lastX: e.clientX, lastT: performance.now(), cx: r.c,
     };
     moved = false;
-    tickIdx = idx;
     btns().forEach((b, i) => b.classList.toggle("near", i === idx));
     try { nav.setPointerCapture(e.pointerId); } catch (err) {}
     nav.classList.add("dragging");
@@ -857,7 +921,6 @@ function initTabDrag() {
     if (idx !== drag.idx) {
       drag.idx = idx;
       btns().forEach((b, i) => b.classList.toggle("near", i === idx));
-      tick();                              // 每跨一格一次 6ms 轻反馈
     }
   });
 
@@ -990,7 +1053,8 @@ function nextResumeAt() {
 
 function pollDelay() {
   if (!isQuoteView()) return 60000;
-  if (marketOpen()) return 3000;
+  // 5 秒一拍：3 秒让基带一直醒着，行情半天也不见得变一次；SSE/详情页另有 3 秒推送兜住细看
+  if (marketOpen()) return 5000;
   if (!state.resumeAt) state.resumeAt = nextResumeAt();
   const until = state.resumeAt - Date.now();
   // 距开盘/午休恢复不到 1 分钟：精确睡到边界；已经过点则 15s 后复查，
@@ -2604,6 +2668,12 @@ $("#btn-more").addEventListener("click", () => {
     <button type="button" class="more-row" id="more-theme">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.7"/><path d="M12 3.4v2.3M12 18.3v2.3M3.4 12h2.3M18.3 12h2.3M5.9 5.9l1.6 1.6M16.5 16.5l1.6 1.6M18.1 5.9l-1.6 1.6M7.5 16.5l-1.6 1.6"/></svg>
       <span>外观</span><span class="more-sub" id="more-theme-sub">${themeLabelNow()}</span></button>
+    <button type="button" class="more-row" id="more-glass">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.4" y="6.8" width="11.4" height="11.4" rx="3.2"/><path d="M8.2 6.8V5.6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-1.2"/></svg>
+      <span>玻璃质感</span><span class="more-sub" id="more-glass-sub">${window.GLASS ? GLASS.name[GLASS.get()] : "标准"}</span></button>
+    <button type="button" class="more-row" id="more-password">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="7.2" cy="12" r="3.2"/><path d="M10.4 12h9.6M17 12v3.2M20 12v2.2"/></svg>
+      <span>修改密码</span><span class="more-sub">需要先验证原密码</span></button>
     <button type="button" class="more-row danger" id="more-logout">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3.5v8"/><path d="M7.1 6.5a7.5 7.5 0 1 0 9.8 0"/></svg>
       <span>退出登录</span><span class="more-sub">需要重新输入访问密码</span></button>
@@ -2643,6 +2713,10 @@ $("#btn-more").addEventListener("click", () => {
   if (verBtn) verBtn.onclick = () => openVerSheet();
   const thBtn = $("#more-theme");
   if (thBtn) thBtn.onclick = () => { closeSheet(); openThemeSheet(); };
+  const glBtn = $("#more-glass");
+  if (glBtn) glBtn.onclick = () => { closeSheet(); openGlassSheet(); };
+  const pwBtn = $("#more-password");
+  if (pwBtn) pwBtn.onclick = () => { closeSheet(); openPasswordSheet(); };
   $("#more-logout").onclick = () => { $("#logout").click(); };
   const ringBtn = $("#more-ring");
   if (ringBtn) ringBtn.onclick = () => { if (typeof openWkRemindSettings === "function") openWkRemindSettings(); };
@@ -2701,8 +2775,47 @@ var MU_ICON = {
   pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7.6" y="5.6" width="3" height="12.8" rx="1.1"/><rect x="13.4" y="5.6" width="3" height="12.8" rx="1.1"/></svg>'
 };
 
+/* 本机播放时钟：壳每秒推一次 elapsed（MPNowPlayingInfoCenter 给的也是量化值），
+   两次推送之间在本地连续外推；每次推送只做小幅校正，量化误差不会让歌词往回跳。
+   误差超过 0.45s 视为换歌或拖动进度，直接对齐。
+   这里必须用 Date.now()，不能用 performance.now()：iOS 切后台会把
+   performance.now() 冻住，回来时歌词就会少掉后台那段时间。 */
+var MU_CLK = { t: 0, wall: 0, valid: false, seekAt: 0 };
+
+function muClockNow() {
+  const m = (typeof muState === "function" ? muState() : state.music) || {};
+  if (!MU_CLK.valid) return Number(m.elapsed) || 0;
+  const live = m.state === "playing";
+  return Math.max(0, MU_CLK.t + (live ? (Date.now() - MU_CLK.wall) / 1000 : 0));
+}
+
+function muClockSeek(t) {
+  MU_CLK.t = Math.max(0, Number(t) || 0);
+  MU_CLK.wall = Date.now();
+  MU_CLK.valid = true;
+  MU_CLK.seekAt = Date.now();
+}
+
 window.sbMusic = function (o) {
   if (!o || typeof o !== "object") return;
+  const el = Number(o.elapsed) || 0;
+  /* seek 后壳的 currentPlaybackTime 可能还没生效，紧接着那一拍会推回旧位置。
+     1.5 秒内、和本地新位置差很多的那一推只当元数据，不用它校正时钟，
+     否则歌词会被拉回 seek 前。 */
+  const seekGuard = MU_CLK.valid && MU_CLK.seekAt && Date.now() - MU_CLK.seekAt < 1500;
+  const staleAfterSeek = seekGuard && o.state === "playing" && Math.abs(el - muClockNow()) > 1.2;
+  if (!staleAfterSeek) {
+    if (MU_CLK.valid) {
+      const pred = muClockNow();
+      const err = el - pred;
+      MU_CLK.t = (o.state === "playing" && Math.abs(err) <= 0.45) ? pred + err * 0.35 : el;
+    } else {
+      MU_CLK.t = el;
+    }
+    MU_CLK.seekAt = 0;
+  }
+  MU_CLK.wall = Date.now();
+  MU_CLK.valid = true;
   state.music = o;
   if (typeof sbMuPaint === "function") sbMuPaint();
 };
@@ -3301,16 +3414,32 @@ async function openKlineHealthSheet() {
 async function paintHoldSum() {
   const box = $("#hold-sum");
   if (!box || !state.board) return;
-  let d = null;
-  try { d = await api("dashboard", { noRetry: true }, 12000); } catch (e) { d = null; }
-  if (!d) { box.hidden = true; return; }
+  // 汇总数字服务端已经算在 board.sum 里，手机只管渲染；只有老缓存没有这个字段才回退请求 dashboard
+  const bd = state.board;
+  // 兜底只做一次：board 已经带 sum，老缓存（升级前写的 localStorage 快照）才会缺；
+  // 以前每次重开都会再打一遍 dashboard / dca/plan / stocks，纯重复。
+  const fb = (paintHoldSum._fb = paintHoldSum._fb || { dash: 0, hold: 0, plan: 0 });
+  let d = paintHoldSum._dash || null;
+  if (!bd.sum && !fb.dash) {
+    fb.dash = 1;
+    try { d = await api("dashboard", { noRetry: true }, 12000); } catch (e) { d = null; }
+    if (d) paintHoldSum._dash = d;
+  }
+  if (!bd.sum && !d) {
+    d = paintHoldSum._dash || null;
+    if (!d) { box.hidden = true; return; }
+  }
   // ② 我的今日：浮动 / 今日 / 市值 / 每日定投
-  const h = d.hold || {};
+  const h = bd.sum || (d && d.hold) || {};
   let rows = [];
-  try { rows = await loadHoldings(); } catch (e) { rows = []; }
+  if (bd.sum) rows = (bd.stocks || []).filter((r) => r && r.bucket === "hold" && Number(r.shares) > 0);
+  else if (!fb.hold) { fb.hold = 1; try { rows = await loadHoldings(); } catch (e) { rows = []; } }
   state.holdRows = (rows || []).filter((r) => r && Number(r.shares) > 0);
-  let plan = null;
-  try { plan = await api("dca/plan", { noRetry: true }, 12000); } catch (e) { plan = null; }
+  let plan = bd.dca_plan || state.dcaPlan || null;
+  if (!plan && !fb.plan) {
+    fb.plan = 1;
+    try { plan = await api("dca/plan", { noRetry: true }, 12000); } catch (e) { plan = null; }
+  }
   state.dcaPlan = plan;
   const dcaSum = state.holdRows.reduce((a, r) => a + (Number(r.dca) || 0), 0);
   const effDca = plan ? plan.effective_total : null;
@@ -3327,8 +3456,9 @@ async function paintHoldSum() {
   if (dcaBtn) dcaBtn.onclick = () => openDcaEditor();
   const perfBtn = box.querySelector("[data-perf]");
   if (perfBtn) perfBtn.onclick = () => openPerfSheet();
-  paintAlertDot(d.alert_unread || 0);
-  const leadLine = d.lead ? `今日 ${esc(d.lead.name)} ${pctText(d.lead.pct)} 领涨` : "";
+  paintAlertDot((bd.sum ? bd.alert_unread : (d && d.alert_unread)) || 0);
+  const ld = bd.sum ? bd.lead : (d && d.lead);
+  const leadLine = ld ? `今日 ${esc(ld.name)} ${pctText(ld.pct)} 领涨` : "";
   state.dashLead = leadLine;
 }
 
@@ -3542,17 +3672,60 @@ function fundMetsText(code) {
   // 前面的价格已经是单位净值，这里只标截止日和规模，不再重复「净值」两个字
   return `截至 ${nd || "—"} · ${acc}${scale} · ${d.sgzt || "申购状态 —"}`;
 }
+const FUND_MEMO_MS = 10 * 60000;
+const fundMemoAt = new Map();
+function fundMemoFresh(code) {
+  const t = fundMemoAt.get(String(code));
+  return fundProfileMemo.has(String(code)) && !!t && Date.now() - t < FUND_MEMO_MS;
+}
+
+/* 一次只飞一条：以前每次重绘（3 秒一拍）都会再发一次，同一只基金能在几秒里叠 4~6 条，
+   接口再快也是白烧网络和电。 */
+const FUND_MIN_GAP = 60000;
+const fundNextAt = new Map();
+/* 同一拍里要的几只基金合成一个请求：持仓页 5 只以前是 5 条并发，
+   现在 150ms 窗口内的合并成一条 /funds?codes=…，冷启动少 4 次隧道往返。 */
+const fundBatchWait = new Map();
+let fundBatchTimer = 0;
+function fundBatchCall(code) {
+  return new Promise((resolve, reject) => {
+    fundBatchWait.set(String(code), { resolve, reject });
+    if (fundBatchTimer) return;
+    fundBatchTimer = setTimeout(() => {
+      const pend = new Map(fundBatchWait);
+      fundBatchWait.clear();
+      fundBatchTimer = 0;
+      const codes = [...pend.keys()].slice(0, 24);
+      const dropped = [...pend.keys()].slice(24);
+      dropped.forEach((c) => pend.get(c).resolve({ ok: false, error: "一次最多取 24 只" }));
+      if (!codes.length) return;
+      api(`funds?codes=${codes.map(encodeURIComponent).join(",")}&lite=1`, { noRetry: true }, 25000)
+        .then((r) => {
+          const list = (r && r.funds) || {};
+          pend.forEach((h, c) => { if (codes.includes(c)) h.resolve(list[c] || { ok: false, error: "空响应" }); });
+        })
+        .catch((e) => pend.forEach((h, c) => { if (codes.includes(c)) h.reject(e); }));
+    }, 150);
+  });
+}
 function loadFundMets(code) {
-  if (!fundMetsWanted.has(code)) return;
-  if (fundCooling(code)) { fundMetsWanted.delete(code); return; }
-  api(`fund/${code}`, { noRetry: true }, 20000).then((d) => {
-    if (d && d.ok) { fundProfileMemo.set(code, d); fundFailAt.delete(code); }
+  code = String(code);
+  if (fundCooling(code) || fundInflight.has(code)) return;
+  if (fundMemoFresh(code)) return;
+  // 硬闸：不管上面的缓存怎么失效，同一只基金 60 秒最多打一次接口
+  if (Date.now() < (fundNextAt.get(code) || 0)) return;
+  fundNextAt.set(code, Date.now() + FUND_MIN_GAP);
+  fundMetsWanted.delete(code);
+  fundInflight.add(code);
+  fundBatchCall(code).then((d) => {
+    if (d && d.ok) { fundProfileMemo.set(code, d); fundMemoAt.set(code, Date.now()); fundFailAt.delete(code); }
     else fundFail(code, (d && d.error) || "空响应");
   }).catch((e) => fundFail(code, e)).finally(() => {
-    fundMetsWanted.delete(code);
+    fundInflight.delete(code);
     if (state.board) patchBoardQuotes(state.board);
   });
 }
+const fundInflight = new Set();
 function metsLineHtml(s) {
   const flags = [s.stale ? "延迟" : "", s.source === "sina" ? "备用源" : ""].filter(Boolean).join(" · ");
   if (s.source === "fund_nav") {
@@ -3576,7 +3749,10 @@ function patchBoardQuotes(d) {
       pc.className = `pc ${cls(s.pct)}`;
     }
     const mets = row.querySelector(".mets-line");
-    if (mets) mets.innerHTML = metsLineHtml(s);
+    if (mets) {
+      const h = metsLineHtml(s);
+      if (mets.innerHTML !== h) mets.innerHTML = h;
+    }
   });
 }
 

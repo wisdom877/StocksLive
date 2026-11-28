@@ -87,8 +87,8 @@ class OverviewTest(unittest.TestCase):
         store.work_add_task(1, "旧的事", "", "2026-11-24 09:00")
         tid = store.work_list()["tasks"][-1]["id"]
         store.work_update_task(tid, {"done": 1})
-        d = store.work_overview("2026-11-26", "2026-11-26")["days"]
         today = store.today_bj()[:10]
+        d = store.work_overview(today, today)["days"]
         self.assertEqual(d.get(today, {}).get("task_done"), 1)
         # 原计划日只算「有安排」，不算完成
         d2 = store.work_overview("2026-11-24", "2026-11-24")["days"]

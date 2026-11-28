@@ -794,6 +794,18 @@ def _is_offsite_fund(code: str) -> bool:
     return ok
 
 
+def _is_fund_sym(symbol: str, fc: set[str]) -> bool:
+    """这个 secid 是不是场外基金（已登记fund_codes.json，或探测确认过）。
+
+    场外基金拿不到 A 股三源的行情，必须只走天天基金净值；混进 stale/need
+    会让每次刷新都白跑腾讯→新浪→东财，并把整拍拖成秒级。只在 fetch 锁内调用。
+    """
+    raw = symbol[2:]
+    if raw in fc:
+        return True
+    return bool(_offsite_cache.get(raw, (0.0, False))[1])
+
+
 def fetch(codes: list[str]) -> dict[str, dict]:
     """返回 {原始代码: 行情}；缓存 2.5s，腾讯失败时用新浪兜底。
 
@@ -811,7 +823,11 @@ def fetch(codes: list[str]) -> dict[str, dict]:
     fc = fund_codes()
     with _lock:
         now = time.time()
-        stale = [s for _, s in wanted if now - _cache.get(s, (0, {}))[0] > CACHE_TTL]
+        # 场外基金一律不进 A 股三源抓取集合：它们只走下面的天天基金净值分支。
+        # 以前一视同仁导致 5 只基金就把一拍拖到 6 秒，并误触发 _fail_until 连累正常股票。
+        fund_syms = {s for _, s in wanted if _is_fund_sym(s, fc)}
+        stale = [s for _, s in wanted
+                 if s not in fund_syms and now - _cache.get(s, (0, {}))[0] > CACHE_TTL]
         if stale and now >= _fail_until:
             got: dict[str, dict] = {}
             # 腾讯 30 秒退避期内直接跳过它，让每一拍都走更快的新浪
@@ -826,7 +842,8 @@ def fetch(codes: list[str]) -> dict[str, dict]:
                 else:
                     _tencent_fail_until = time.time() + TENCENT_FAIL_BACKOFF
             # 腾讯没取到/仍过期的代码，走新浪兜底（不覆盖腾讯已有数据）
-            need = [s for s in stale if time.time() - _cache.get(s, (0, {}))[0] > CACHE_TTL]
+            need = [s for s in stale
+                    if s not in fund_syms and time.time() - _cache.get(s, (0, {}))[0] > CACHE_TTL]
             if need:
                 em: dict[str, dict] = {}
                 sina = _sina_fetch(need)
@@ -835,20 +852,14 @@ def fetch(codes: list[str]) -> dict[str, dict]:
                     for symbol, d in sina.items():
                         _cache[symbol] = (ts, d)
                 # 新浪也没拿到的，最后问一次东财（逐只，数量通常很少）
-                still = [s for s in need if time.time() - _cache.get(s, (0, {}))[0] > CACHE_TTL]
+                still = [s for s in need
+                         if s not in fund_syms and time.time() - _cache.get(s, (0, {}))[0] > CACHE_TTL]
                 if still:
                     em = _em_fetch(still)
                     if em:
                         ts = time.time()
                         for symbol, d in em.items():
                             _cache[symbol] = (ts, d)
-                if not sina and not em:
-                    # 三个源都失败：整体退避几秒，返回旧缓存
-                    _fail_until = time.time() + FETCH_FAIL_BACKOFF
-                    _warn("quotes upstream unavailable; serving last cache")
-        # 场外基金兜底：A 股源没有这些代码，改取天天基金官方净值。
-        # 关键：只有 A 股行情里确实没有的代码才去探「是不是场外基金」（最多 4 个、
-        # 每个 2.5 秒）。以前是抓行情之前就逐只探，两个普通股票代码就能把首屏拖 10 秒。
         out: dict[str, dict] = {}
         now = time.time()
         missing: list[str] = []
@@ -859,29 +870,43 @@ def fetch(codes: list[str]) -> dict[str, dict]:
                 out[raw] = dict(d, stale=(now - ts) > (FUND_TTL if fund else CACHE_STALE_AFTER))
             else:
                 missing.append(raw)
-        fund_list = [r for r in missing if r in fc]
-        for raw in [r for r in missing if len(r) == 6 and r.isdigit() and r not in fc][:4]:
-            if _is_offsite_fund(raw):
-                fund_list.append(raw)
-        if fund_list:
-            now_t = time.time()
-            todo = [c for c in fund_list
-                    if now_t - _fund_cache.get(c, (0, {}))[0] > FUND_TTL
-                    and now_t - _fund_failed.get(c, 0) > FUND_NEG_TTL]
-            if todo:
-                got_f = _fund_fetch(todo)
-                ts_f = time.time()
-                for c, d in got_f.items():
-                    _fund_cache[c] = (ts_f, d)
-                    _fund_failed.pop(c, None)
-                for c in todo:
-                    if c not in got_f:
-                        _fund_failed[c] = ts_f
-            for raw in fund_list:
-                ts, d = _fund_cache.get(raw, (0, {}))
-                if d:
-                    out[raw] = dict(d, stale=(time.time() - ts) > FUND_TTL)
-        return out
+
+    # 锁外：只有 A 股三源都拿不到的代码才去探「是不是场外基金」（最多 4 只、每只最多
+    # 2.5 秒）。普通股票走完三源就有数据了，根本到不了这里；探测也不再占着全局锁。
+    probe = [r for r in missing
+             if len(r) == 6 and r.isdigit() and r not in fc
+             and time.time() - _offsite_cache.get(r, (0.0, False))[0] > 1800][:4]
+    for r in probe:
+        _is_offsite_fund(r)
+
+    fund_list = [r for r in missing
+                 if r in fc or _offsite_cache.get(r, (0.0, False))[1]]
+    if fund_list:
+        now_t = time.time()
+        todo = [c for c in fund_list
+                if now_t - _fund_cache.get(c, (0, {}))[0] > FUND_TTL
+                and now_t - _fund_failed.get(c, 0) > FUND_NEG_TTL]
+        if todo:
+            got_f = _fund_fetch(todo)
+            ts_f = time.time()
+            for c, d in got_f.items():
+                _fund_cache[c] = (ts_f, d)
+                _fund_failed.pop(c, None)
+            for c in todo:
+                if c not in got_f:
+                    _fund_failed[c] = ts_f
+        for raw in fund_list:
+            ts, d = _fund_cache.get(raw, (0, {}))
+            if d:
+                out[raw] = dict(d, stale=(time.time() - ts) > FUND_TTL)
+
+    # 只有「真·A 股代码在三源里一个都拿不到」才算上游挂了、才整体退避。
+    # 以前只要有一只没登记的场外基金混在批量里就触发 3 秒全局退避，正常股票跟着停更。
+    if [r for r in missing if r not in out
+            and not _offsite_cache.get(r, (0.0, False))[1]]:
+        _fail_until = time.time() + FETCH_FAIL_BACKOFF
+        _warn("quotes upstream unavailable; serving last cache")
+    return out
 
 
 def cache_info() -> dict:

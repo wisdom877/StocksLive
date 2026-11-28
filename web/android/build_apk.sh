@@ -15,7 +15,7 @@ source ./site.conf
 : "${SITE_BASE:?site.conf 缺少 SITE_BASE}"
 KEY=$(cat "$ROOT/data/appkey")
 KS=astock.keystore
-KSPASS=${ASTOCK_KS_PASS:?请设置 ASTOCK_KS_PASS（签名密钥库密码）}
+KSPASS=astockjournal
 
 rm -rf build
 mkdir -p build/gen build/classes build/dex build/res build/src

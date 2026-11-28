@@ -797,14 +797,34 @@ function renderMarkNotes() {
   });
   const box = $("#notes");
   if (!box) return;
-  // 系统自动写的批注（异动监控）也在这里露脸
-  const autoMarks = (state.notes || []).filter((n) => n.kind === "mark").slice(0, 20);
+  const isAutoMark = (n) => (n.tags || []).some((t) => AUTO_TAGS.includes(t) || String(t).startsWith("自动"));
+  // 系统自动写的批注（异动监控）也在这里露脸；只认带「自动」标签的，
+  // 手写批注即使 kind=mark 也不能被套上「自动批注」的帽子
+  const autoMarks = (state.notes || []).filter((n) => n.kind === "mark" && isAutoMark(n)).slice(0, 20);
+  // 手动批注是「按天写的那条」，和总览/当天明细里的「批注」是同一批数据。
+  // 以前这一栏只认总结里的标红/下划线，于是同一天的批注在明细里有、在记录页没有。
+  const manualMarks = (state.notes || []).filter((n) => {
+    if (n.kind !== "mark" || isAutoMark(n)) return false;
+    const d = String(n.created_at || "").slice(0, 10) || String(n.day || "");
+    if (from && d < from) return false;
+    if (to && d > to) return false;
+    return true;
+  }).sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || ""))).slice(0, 60);
+  const manualHtml = manualMarks.map((n) => `<div class="item mark-card manual-mark" data-manual-id="${n.id}">
+      <div class="meta"><span class="badge mk">批注</span>
+        <span>${esc(String(n.created_at || "").slice(5, 16))}</span>
+        <span class="mk-at">记于 ${esc(String(n.created_at || "").slice(5, 10))}</span></div>
+      <div class="mk-entries"><div class="mk-entry"><div class="mk-note">${esc(n.content || "").replace(/\n/g, "<br>")}</div></div></div>
+      <div class="mk-actions">
+        <button type="button" class="mk-act edit" data-manual-edit="${n.id}">编辑</button>
+      </div>
+    </div>`).join("");
   const autoHtml = autoMarks.map((n) => `<div class="item mark-card auto-mark" data-auto-id="${n.id}">
       <div class="meta"><span class="badge mk">自动批注</span>
         <span>${esc(String(n.created_at || "").slice(5, 16))}</span></div>
       <div class="mk-entries"><div class="mk-entry"><div class="mk-note">${esc(n.content)}</div></div></div>
     </div>`).join("");
-  if (!marks.length && !autoMarks.length) {
+  if (!marks.length && !autoMarks.length && !manualMarks.length) {
     box.innerHTML = `<div class="empty-rich">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.6 2.6 0 0 0-3.7-3.7L4 16.4V20z"/><path d="M13.6 7.1l3.3 3.3"/></svg>
         <div class="er-t">还没有批注</div><div class="er-d">在新闻总结里选中文字，点「标红 / 下划线 / 批注」</div></div>`;
@@ -826,7 +846,7 @@ function renderMarkNotes() {
   }).sort((a, b) => String(b.day).localeCompare(String(a.day))
     || String(b.slot).localeCompare(String(a.slot))
     || digestBlockOrder(a.block) - digestBlockOrder(b.block));
-  box.innerHTML = autoHtml + cards.map(({ arr, day, slot, block, created }) => {
+  box.innerHTML = manualHtml + autoHtml + cards.map(({ arr, day, slot, block, created }) => {
     const isGroup = arr.length > 1;
     const entries = arr.map((m) => {
       const note = String(m.note || "").trim();
@@ -862,6 +882,14 @@ function renderMarkNotes() {
     b.onclick = (e) => {
       e.stopPropagation();
       openDigestMarkEditor(b.dataset.editMark);
+    };
+  });
+  // 手动批注直接复用「编辑记录」：改完 loadNotes 会重新渲染这一栏，不会和当天明细分叉
+  $$("#notes .manual-mark [data-manual-edit]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const n = (state.notes || []).find((x) => Number(x.id) === Number(b.dataset.manualEdit));
+      if (n) editNote(n);
     };
   });
 }

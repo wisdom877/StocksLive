@@ -37,7 +37,7 @@ SCOPES = ("key", "full")
 # 编辑层：必看 / 今日主线 / 故事线 / 持仓雷达 / 接下来 / 较上期
 KEY_PREFIXES = ("必看", "今日主线", "故事线", "持仓", "接下来", "较上期")
 CHUNK_CHARS = 1800
-CACHE_DAYS = 35   # 比总结的 30 天保留期多几天，避免用户刚看完就被清掉
+CACHE_DAYS = 14   # 音频是随时可再生成的缓存，留 14 天足够（35 天会占 100M+ 磁盘）
 CHUNK_RETRIES = 2
 
 log = logging.getLogger("digest-tts")

@@ -44,6 +44,9 @@ def conn():
     c.row_factory = sqlite3.Row
     try:
         c.execute("PRAGMA journal_mode=WAL")
+        # WAL 下 synchronous=FULL 每次提交都 fsync 一遍 WAL，写入放大明显；
+        # NORMAL 在 WAL 里仍然是崩溃一致的（断电最多丢最近几条提交，库不会坏）。
+        c.execute("PRAGMA synchronous=NORMAL")
         c.execute("PRAGMA foreign_keys=ON")
         yield c
         c.commit()
@@ -3227,16 +3230,6 @@ def _dow_no(day: str) -> int:
     return datetime.strptime(day, "%Y-%m-%d").weekday() + 1
 
 
-def _break_len(a: str, b: str) -> int:
-    try:
-        h1, m1 = (int(x) for x in str(a)[:5].split(":"))
-        h2, m2 = (int(x) for x in str(b)[:5].split(":"))
-    except (ValueError, AttributeError):
-        return 0
-    d = (h2 * 60 + m2) - (h1 * 60 + m1)
-    return d if d > 0 else d + 24 * 60
-
-
 def _shift_min_map(c: sqlite3.Connection, days: list[str]) -> dict:
     """每天「在岗分钟」：班次 dur_min − 休息段，跨日班整段归到开始那天。
 
@@ -3317,12 +3310,15 @@ def _mode_days_ok(m: dict, day: str, hol: dict) -> bool:
     return True
 
 
-def work_overview(start: str, end: str, mode_id: int | None = None) -> dict:
+def work_overview(start: str, end: str, mode_id: int | None = None,
+                  note_q: str | None = None) -> dict:
     """按天汇总成一张表，给「数据总览」的热力图用。
 
     这里只算前端拿不到历史的两项：专注（focus_runs 全在库里，接口只回进行中的那条）
     和任务完成（work_tasks 只回当前清单）。值班工时前端有自己的轮转表 + 手调覆盖，
     由前端按同一条口径（班次 dur_min - 休息）本地算，避免两处各维护一套排班解析。
+    批注 / 分析记录也在这里按天计数：它们不是时长型指标，热力图只回答「哪天记了几条」。
+    note_q 只筛这两类记录的正文和标签，不碰专注/任务那几列。
     """
     start = str(start or "").strip()[:10]
     end = str(end or "").strip()[:10]
@@ -3337,7 +3333,10 @@ def work_overview(start: str, end: str, mode_id: int | None = None) -> dict:
 
     def _row(d: str) -> dict:
         return days.setdefault(d, {"focus_min": 0, "focus_runs": 0, "focus_steps": 0,
-                                   "task_done": 0, "task_all": 0, "shift_min": 0})
+                                   "task_done": 0, "task_all": 0, "shift_min": 0,
+                                   "mark_n": 0, "analysis_n": 0})
+
+    nq = str(note_q or "").strip()[:40]
 
     with _lock, conn() as c:
         rows = c.execute("SELECT day,mode_id,mode_name,started_at,ended_at,status,step_idx,snapshot"
@@ -3382,7 +3381,25 @@ def work_overview(start: str, end: str, mode_id: int | None = None) -> dict:
             d = done_at if _OV_DAY.match(done_at) else str(t["due_at"] or "")[:10]
             if start <= d <= end:
                 _row(d)["task_done"] += 1
+        # 批注 / 分析记录：按 created_at 的日期落格；q 同时匹配正文和标签（标签存 JSON 串）
+        nsql = ("SELECT kind,substr(created_at,1,10) AS d FROM notes"
+                " WHERE deleted=0 AND kind IN ('mark','analysis')"
+                " AND substr(created_at,1,10)>=? AND substr(created_at,1,10)<=?")
+        nargs: list = [start, end]
+        if nq:
+            nsql += " AND (content LIKE ? OR tags LIKE ?)"
+            nargs += [f"%{nq}%", f"%{nq}%"]
+        for n in c.execute(nsql, nargs):
+            d = str(n["d"] or "")[:10]
+            if not (start <= d <= end):
+                continue
+            k = "mark_n" if n["kind"] == "mark" else "analysis_n"
+            _row(d)[k] += 1
         since = c.execute("SELECT MIN(day) AS d FROM focus_runs").fetchone()["d"]
+        kind_since = {r["kind"]: str(r["d"] or "")[:10] for r in c.execute(
+            "SELECT kind,MIN(substr(created_at,1,10)) AS d FROM notes"
+            " WHERE deleted=0 AND kind IN ('mark','analysis') GROUP BY kind")}
+        note_since = min([x for x in (kind_since.get("mark"), kind_since.get("analysis")) if x] or [""])
         # 值班工时：排班在库里（轮转 + 手调 + 班次时长），这里算好后端只给一份，前端不再自己算一遍
         day_list = []
         dd = datetime.strptime(start, "%Y-%m-%d")
@@ -3405,6 +3422,8 @@ def work_overview(start: str, end: str, mode_id: int | None = None) -> dict:
         if m["id"] not in mstats:
             stats.append({"id": m["id"], "name": m["name"], "runs": 0, "min": 0, "days": 0})
     return {"days": days, "start": start, "end": end, "since": str(since or "")[:10],
+            "note_since": note_since, "mark_since": kind_since.get("mark", ""),
+            "analysis_since": kind_since.get("analysis", ""), "note_q": nq,
             "modes": modes_list, "mode_stats": stats, "mode_id": mid_flt or 0}
 
 
@@ -3437,7 +3456,11 @@ def work_day_brief(day: str) -> dict:
         marks = [dict(r) for r in c.execute(
             "SELECT id,content,tags,created_at,updated_at FROM notes"
             " WHERE deleted=0 AND kind='mark' AND substr(created_at,1,10)=? ORDER BY created_at, id", (day,))]
-        return {"day": day, "tasks": tasks, "focus": uniq, "marks": marks}
+        # 大盘异动分析（monitor 写入的 kind=analysis），同样按那天落格，总览选了「分析」时直接看这批
+        analysis = [dict(r) for r in c.execute(
+            "SELECT id,content,tags,created_at,updated_at FROM notes"
+            " WHERE deleted=0 AND kind='analysis' AND substr(created_at,1,10)=? ORDER BY created_at, id", (day,))]
+        return {"day": day, "tasks": tasks, "focus": uniq, "marks": marks, "analysis": analysis}
 
 
 def focus_list() -> dict:

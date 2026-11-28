@@ -227,7 +227,8 @@ function renderNoteFilters() {
 // 内容由 Hermes 每天 08:00 / 20:00 写入（上一张卡以来的新闻分领域统计），一天两张，越详细越好
 async function loadDigests(force, full) {
   // 首屏只取最近 10 张，避免一次拉 30 天；打开总结面板/点「总结」时再取全量（最多 60 张）
-  const cached = memoFresh("digest", 120000);
+  // 总结一天才更新两次：10 分钟内重开都不该重拉 500KB 正文
+  const cached = memoFresh("digest", 600000);
   const cachedTotal = Number((cached && cached.total) || ((cached && cached.items) || []).length);
   const cachedFull = cached && ((cached.items || []).length >= cachedTotal);
   let d = null;
@@ -235,7 +236,8 @@ async function loadDigests(force, full) {
     if (full ? cachedFull : cached) d = cached;
   }
   if (!d) {
-    const limit = full ? 60 : 10;
+    // 面板不要一次拉满 60 张正文：按当前展开数取，点「查看更多」再取更多
+    const limit = full ? Math.min(60, Math.max(10, state.digestShown || 10)) : 10;
     d = await api(`digest?limit=${limit}`).catch(() => api(`digest?limit=${limit}`));   // 首屏偶发 401/超时，重试一次
     memoSet("digest", d);
   }
@@ -872,6 +874,9 @@ function renderDigests() {
   if (moreBtn) moreBtn.onclick = () => {
     state.digestShown = (state.digestShown || 10) + 10;
     renderDigests();
+    // 本地还没拿到新展开的几张时才回服务端取：10 → 20 → 30，不一次背 60 张
+    const need = Math.min(state.digestShown, state.digestTotal || 0);
+    if ((state.digests || []).length < need) loadDigests(true, true).catch(() => {});
   };
 }
 

@@ -48,9 +48,13 @@ function startSheetQuote(code) {
   };
   tickOnce();
   if (isFundCode(code)) return;
-  // 盘中 3s 跟；收盘后报价不动，不设定时器（打开时已抓一次）
-  if (marketOpen()) sheetQuoteTimer = setInterval(() => sheetQuoteTick(code), 3000);
-  if (typeof EventSource === "undefined") return;
+  // 报价只走 SSE（服务端本来就 3 秒推一条）；不支持 SSE 或流断了才退回轮询。
+  // 以前两路同时跑，同一标的每 3 秒白拿两份数据。
+  const pollFallback = () => {
+    if (sheetQuoteCode !== code || sheetQuoteTimer) return;
+    if (marketOpen()) sheetQuoteTimer = setInterval(() => sheetQuoteTick(code), 3000);
+  };
+  if (typeof EventSource === "undefined") { pollFallback(); return; }
   try {
     const es = new EventSource(`api/v1/stream/quote/${code}`);
     sheetEventSource = es;
@@ -68,6 +72,7 @@ function startSheetQuote(code) {
       try { es.close(); } catch (err) { /* ignore */ }
       if (sheetEventSource === es) sheetEventSource = null;
       sheetSseAt = 0;
+      pollFallback();
       sheetQuoteTick(code);
     };
   } catch (err) {
@@ -1363,6 +1368,8 @@ async function loadFundProfile(code) {
   const box = $("#sq-detail");
   if (!box) return;
   let d = fundProfileMemo.get(code);
+  // 列表页批量取的是 lite（没有净值历史），详情页要完整版，这里主动丢缓存重取一次
+  if (d && d.lite) d = null;
   if (!d && fundCooling(code)) {
     // 退避期内不再打接口，直接把「取不到」写在原位，避免 3 秒一次的详情轮询反复重拉
     const note = $("#sq-note");

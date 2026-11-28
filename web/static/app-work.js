@@ -130,16 +130,6 @@ function wkStopRing(task) {
   if (state.wkRingTimer) { clearInterval(state.wkRingTimer); state.wkRingTimer = null; }
   try { if (navigator.vibrate) navigator.vibrate(0); } catch (e) {}
 }
-function wkNotify(t) {
-  try {
-    if (window.Notification && Notification.permission === "granted") {
-      new Notification("日程到点：" + t.title, {
-        body: `${String(t.due_at).slice(11)} · ${wkTypeName(t.type_id)}`,
-        tag: "wk-" + t.id, renotify: true,
-      });
-    }
-  } catch (e) {}
-}
 /* ---- 原生桥（iOS 壳 1.2+）：日程交给系统通知，后台/锁屏也能响 ---- */
 function wkNativeHandler() {
   return (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.wkNative) || null;
@@ -309,7 +299,7 @@ function wkAlarmShow(a, silent) {
   // 全屏那张卡带 backdrop-filter，盖在待机的玻璃面板上，点一下要整屏重绘，就是「卡一会」的来源。
   if (typeof sbIsOn === "function" && sbIsOn() && typeof sbDueShow === "function") {
     sbDueShow(a);
-    if (!silent) { wkStartRing(); if (a.kind === "task" && a.task) wkNotify(a.task); }
+    if (!silent) wkStartRing();   // 网页版 Notification 在 WKWebView 不存在，已按原生通知代替
     return;
   }
   const box = $("#wk-alarm");
@@ -331,7 +321,7 @@ function wkAlarmShow(a, silent) {
   if (off) off.textContent = focusEnd ? "进入下一步" : "知道了";
   if (box) box.classList.remove("hidden");
   document.body.classList.add("wk-ringing");
-  if (!silent) { wkStartRing(); if (a.kind === "task" && a.task) wkNotify(a.task); }
+  if (!silent) wkStartRing();   // 网页版 Notification 在 WKWebView 不存在，已按原生通知代替
 }
 
 // 这一次该几点响：snooze_at 只对「今天这一条」有效，跨天自动作废，due_at 永远不动
@@ -3345,7 +3335,7 @@ function openWorkAi(prefill, opts) {
   };
   foldBtn.onclick = () => { expanded = !expanded; paint(); };
   if (flt) {
-    turns.push({ role: "assistant", content: "只说想看什么，我就照着筛：比如「司法预审最近半年跑了多久」「最近上班上了多少小时」。" });
+    turns.push({ role: "assistant", content: "只说想看什么，我就照着筛：比如「司法预审最近半年跑了多久」「关于健身的批注有多少」「最近的分析记录」。" });
     paint();
   }
   const hisBtn = $("#ai-his");
@@ -3363,15 +3353,18 @@ function openWorkAi(prefill, opts) {
       try {
         const d = await api("work/ai-filter", { method: "POST", idempotent: true,
           body: { text, history: hist(), mode_id: Number(state.wkOvMode) || 0,
-                  weeks: Number(state.wkOvRange) || 4, metric: state.wkOvMetric || "focus" } }, 60000);
+                  weeks: Number(state.wkOvRange) || 4, metric: state.wkOvMetric || "focus",
+                  q: state.wkOvNoteQ || "" } }, 60000);
         state.wkOvRange = Number(d.weeks) || 4;
         state.wkOvMetric = d.metric || "focus";
         state.wkOvMode = Number(d.mode_id) || 0;
         state.wkOvModeName = d.mode_id ? (d.mode_name || "") : "";
+        state.wkOvNoteQ = String(d.q || "").trim().slice(0, 20);
         turns.push({ role: "assistant", content: d.reply || "筛好了" });
         paint();
         wkOvRender();
-        wkOvEnsure(true).then(() => wkOvRender());
+        const noteMode = WK_OV_NOTE_METRICS.has(state.wkOvMetric);
+        (noteMode ? wkOvEnsureNotes(true) : wkOvEnsure(true)).then(() => wkOvRender());
       } catch (e) {
         turns.push({ role: "assistant", content: e.message || "AI 没响应" });
         paint();
@@ -3661,10 +3654,18 @@ function wkPushNowPlaying() {
 state.wkOvRange = Number(state.wkOvRange) || 4;
 state.wkOvMetric = state.wkOvMetric || "focus";
 state.wkOvAt = 0;
+// 批注 / 分析记录是「按天记了几条」，和专注模式无关；内容词单独存，换指标时不清空
+state.wkOvNoteQ = String(state.wkOvNoteQ || "");
+state.wkOvNoteD = state.wkOvNoteD || null;
+state.wkOvNoteQAt = 0;
+state.wkOvNoteDQ = null;
 
 const WK_OV_METRICS = [
-  ["focus", "专注时长"], ["task", "任务完成"], ["shift", "值班工时"], ["runs", "专注场次"],
+  ["focus", "专注时长", "专注"], ["task", "任务完成", "任务"],
+  ["shift", "值班工时", "值班"], ["runs", "专注场次", "场次"],
+  ["mark", "批注", "批注"], ["analysis", "分析记录", "分析"],
 ];
+const WK_OV_NOTE_METRICS = new Set(["mark", "analysis"]);
 
 function wkOvData() {
   // 选了某个专注模式时，页面用那一份（后端按 mode 算过）；没选就用全年全模式那份
@@ -3693,11 +3694,13 @@ function wkOvSum(v) {
 function wkOvFmt(v, metric) {
   if (metric === "task") return `${Math.max(0, Math.round(v))} 件`;
   if (metric === "runs") return `${Math.max(0, Math.round(v))} 场`;
+  if (metric === "mark" || metric === "analysis") return `${Math.max(0, Math.round(v))} 条`;
   return wkOvMins(v);
 }
 function wkOvSumFmt(v, metric) {
   if (metric === "task") return `${Math.max(0, Math.round(v))} 件`;
   if (metric === "runs") return `${Math.max(0, Math.round(v))} 场`;
+  if (metric === "mark" || metric === "analysis") return `${Math.max(0, Math.round(v))} 条`;
   return wkOvSum(v);
 }
 /* 值班工时：这天在岗多少分钟（班次在岗时长 = 总时长 − 休息段）
@@ -3719,6 +3722,12 @@ function wkOvShiftMin(day, cache) {
 }
 function wkOvValue(day, metric, cache) {
   if (metric === "shift") return wkOvShiftMin(day, cache);
+  if (metric === "mark" || metric === "analysis") {
+    const it = ((state.wkOvNoteD && state.wkOvNoteD.days) || {})[day] || null;
+    const k = metric === "mark" ? "mark_n" : "analysis_n";
+    const v = it ? Number(it[k]) || 0 : 0;
+    return { v, has: v > 0 };
+  }
   const it = wkOvData().days[day] || null;
   if (metric === "focus") return { v: it ? Number(it.focus_min) || 0 : 0, has: !!(it && it.focus_runs) };
   if (metric === "task") return { v: it ? Number(it.task_done) || 0 : 0, has: !!(it && it.task_all) };
@@ -3748,6 +3757,25 @@ async function wkOvEnsure(force, midArg) {
   } catch (e) { /* 读不到就按空表画，入口保持原样，不弹错 */ }
   state.wkOvLoading = false;
   return mid ? state.wkOvMD : state.wkOv;
+}
+
+/* 批注 / 分析记录：同一张总览接口，带 q 只筛这两类正文和标签。
+   换关键词就要重拉一次，所以单独一份缓存，不覆盖专注那份。 */
+async function wkOvEnsureNotes(force) {
+  const q = String(state.wkOvNoteQ || "").trim().slice(0, 20);
+  if (!force && state.wkOvNoteD && state.wkOvNoteDQ === q && Date.now() - state.wkOvNoteQAt < 120000) {
+    return state.wkOvNoteD;
+  }
+  const w = wkOvWin(53);
+  try {
+    const d = await api(`work/overview?start=${w.from}&end=${w.to}&q=${encodeURIComponent(q)}`, { noRetry: true });
+    if (d && d.days) {
+      state.wkOvNoteD = d;
+      state.wkOvNoteDQ = q;
+      state.wkOvNoteQAt = Date.now();
+    }
+  } catch (e) { /* 读不到就按空表画，不影响专注那几项 */ }
+  return state.wkOvNoteD;
 }
 
 /* ---- 班表段里的入口行：右边 14 根迷你柱 ---- */
@@ -3804,6 +3832,26 @@ function wkYHeatRender() {
 }
 
 /* ---- 打开 / 关闭全屏页 ---- */
+function wkOvBindNoteQ() {
+  const inp = $("#wk-ov-noteq-in");
+  if (!inp || inp.dataset.bound) return;
+  inp.dataset.bound = "1";
+  const x = $("#wk-ov-noteq-x");
+  const apply = () => {
+    const q = String(inp.value || "").trim().slice(0, 20);
+    if (q === state.wkOvNoteQ) { wkOvRender(); return; }
+    state.wkOvNoteQ = q;
+    inp.blur();
+    wkOvRender();
+    wkOvEnsureNotes(true).then(() => wkOvRender());
+  };
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); apply(); }
+  });
+  inp.addEventListener("input", () => { if (x) x.hidden = !String(inp.value || "").trim(); });
+  inp.addEventListener("search", apply);       // 键盘上的搜索键 / 系统清除
+  if (x) x.onclick = () => { inp.value = ""; x.hidden = true; apply(); };
+}
 function wkOvOpen() {
   const p = $("#wk-ov");
   if (!p) return;
@@ -3813,8 +3861,10 @@ function wkOvOpen() {
   if (back) back.onclick = () => wkOvClose();
   const aiBtn = $("#wk-ov-ai");
   if (aiBtn) aiBtn.onclick = () => wkOvAiOpen();
+  wkOvBindNoteQ();
   wkOvRender();
-  wkOvEnsure().then(() => wkOvRender());
+  const noteMode = WK_OV_NOTE_METRICS.has(state.wkOvMetric);
+  (noteMode ? wkOvEnsureNotes() : wkOvEnsure()).then(() => wkOvRender());
 }
 function wkOvClose() {
   const p = $("#wk-ov");
@@ -3865,6 +3915,9 @@ function wkOvRender() {
   const p = $("#wk-ov");
   if (!p || p.classList.contains("hidden")) return;
   const metric = state.wkOvMetric;
+  const noteMode = WK_OV_NOTE_METRICS.has(metric);
+  const noteQ = noteMode ? String(state.wkOvNoteQ || "").trim() : "";
+  const noteLabel = metric === "analysis" ? "分析记录" : "批注";
   const n = Number(state.wkOvRange) || 4;
   const metricName = (WK_OV_METRICS.find((x) => x[0] === metric) || WK_OV_METRICS[0])[1];
   const rangeName = n === 13 ? "近 13 周" : n === 26 ? "近半年" : "近 4 周";
@@ -3872,7 +3925,10 @@ function wkOvRender() {
   const today = wkToday();
   const cache = new Map();
 
-  const since = String(wkOvData().since || "");
+  const src = noteMode ? (state.wkOvNoteD || { days: {} }) : wkOvData();
+  const noteSince = metric === "analysis" ? (src.analysis_since || src.note_since)
+    : (src.mark_since || src.note_since);
+  const since = String((noteMode ? noteSince : src.since) || "");
   const rows = [];
   for (let i = 0; i < n; i++) {
     const start = wkDayAdd(w.from, i * 7);
@@ -3887,8 +3943,14 @@ function wkOvRender() {
   const flat = rows.filter((r) => r.cells[0].day <= today).flatMap((r) => r.cells).filter((c) => !c.fut);
   const vals = flat.filter((c) => c.has).map((c) => c.v).sort((a, b) => a - b);
   const p90 = vals.length ? Math.max(1, vals[Math.floor((vals.length - 1) * 0.9)] || 0) : 1;
+  // 批注/分析是离散条数，1 条和 5 条已经差一个量级；用固定档，不跟着 p90 漂
   const lv = (c) => {
     if (!c.has) return 0;                       // 空心 = 那天没有记录
+    if (noteMode) {
+      if (c.v <= 1) return 2;      // 1 条已经要看得出来，别用最浅一档
+      if (c.v <= 3) return 3;
+      return 4;
+    }
     if (!c.v) return 1;                         // 有记录但为 0：最浅一档
     if (c.v <= p90 * 0.25) return 1;
     if (c.v <= p90 * 0.55) return 2;
@@ -3915,7 +3977,18 @@ function wkOvRender() {
   const avg = hasDays ? Math.round(total / hasDays) : 0;
   const top = flat.filter((c) => c.has && c.v > 0).sort((a, b) => b.v - a.v)[0] || null;
   let third = "";
-  if (metric === "focus" || metric === "runs") {
+  if (noteMode) {
+    let streak = 0;
+    let d = today;
+    while (true) {
+      const val = wkOvValue(d, metric, cache);
+      if (!(val.has && val.v > 0)) break;
+      streak += 1;
+      d = wkDayAdd(d, -1);
+      if (streak > 400) break;
+    }
+    third = `连续 ${streak} 天有记录`;
+  } else if (metric === "focus" || metric === "runs") {
     let streak = 0;
     let d = today;
     while (true) {
@@ -3936,9 +4009,11 @@ function wkOvRender() {
     || ((state.wkOv && state.wkOv.mode_stats) || []).find((x) => Number(x.id) === mid)?.name
     || "这个模式") : "";
   const tag = `${rangeName}${modeName ? ` · ${modeName}` : ""}`;
-  const head = hasDays ? `${tag} · ${metricName}`
-    : (since ? `${tag} · 还没有记录（专注记录从 ${Number(since.slice(5, 7))} 月 ${Number(since.slice(8, 10))} 日开始）`
-             : `${tag} · 还没有记录`);
+  let head = "";
+  if (hasDays) head = `${tag} · ${metricName}${noteQ ? ` · 「${noteQ}」` : ""}`;
+  else if (noteMode) head = `${tag} · ${noteQ ? `没有匹配「${noteQ}」的${noteLabel}` : `还没有${noteLabel}`}`;
+  else if (since) head = `${tag} · 还没有记录（专注记录从 ${Number(since.slice(5, 7))} 月 ${Number(since.slice(8, 10))} 日开始）`;
+  else head = `${tag} · 还没有记录`;
   const segs = hasDays ? [
     `${rangeName}合计 ${wkOvSumFmt(total, metric)}`,
     `日均 ${wkOvAvgFmt(avg, metric)}`,
@@ -3961,6 +4036,7 @@ function wkOvRender() {
   // 不把每个模式都摊到顶栏——模式一多顶栏会变成一面墙
   const mm = $("#wk-ov-modes");
   if (mm) {
+    mm.classList.toggle("hidden", noteMode);   // 批注/分析跟模式无关，这一行整个收起来，筛选条也不白占高度
     const stats = (state.wkOv && state.wkOv.mode_stats) || [];
     const used = stats.filter((x) => x.runs > 0);
     const top = used.slice(0, 2);   // 只放最常用的两个：行里再多一颗就得换行，换成「全部模式」兜住
@@ -3980,32 +4056,52 @@ function wkOvRender() {
   }
   const ms = $("#wk-ov-metric");
   if (ms) {
-    ms.innerHTML = WK_OV_METRICS.map(([k, t]) => `<button type="button" class="chip${k === metric ? " on" : ""}" data-ovmetric="${k}">${t}</button>`).join("");
+    ms.innerHTML = WK_OV_METRICS.map(([k, t, short]) => `<button type="button" class="chip${k === metric ? " on" : ""}" data-ovmetric="${k}" title="${t}" aria-label="${t}">${short || t}</button>`).join("");
     ms.querySelectorAll("[data-ovmetric]").forEach((b) => {
       b.onclick = () => {
-        state.wkOvMetric = b.dataset.ovmetric;
-        // 换成任务/值班这两项时，模式筛选没有意义，回到「全部」再画
-        if (state.wkOvMetric === "shift" || state.wkOvMetric === "task") {
-          if (Number(state.wkOvMode)) { state.wkOvMode = 0; state.wkOvModeName = ""; wkOvEnsure(true).then(() => wkOvRender()); }
+        const k = b.dataset.ovmetric;
+        state.wkOvMetric = k;
+        const note = WK_OV_NOTE_METRICS.has(k);
+        // 任务/值班/批注/分析都跟专注模式无关：先回到「全部」，别让抬头挂着白班
+        if (note || k === "shift" || k === "task") {
+          state.wkOvMode = 0; state.wkOvModeName = "";
         }
         wkOvRender();
+        (note ? wkOvEnsureNotes() : wkOvEnsure(true)).then(() => wkOvRender());
       };
     });
+  }
+  const nq = $("#wk-ov-noteq");
+  if (nq) {
+    nq.classList.toggle("hidden", !noteMode);
+    const inp = $("#wk-ov-noteq-in");
+    if (inp) {
+      if (document.activeElement !== inp) inp.value = noteQ;
+      inp.placeholder = metric === "analysis" ? "搜分析记录，比如 大盘" : "搜批注内容，比如 健身";
+    }
+    const x = $("#wk-ov-noteq-x");
+    if (x) x.hidden = !noteQ;
   }
   const heat = $("#wk-ov-heat"); if (heat) heat.innerHTML = grid;
   const legend = $("#wk-ov-legend");
   if (legend) {
+    const empty = noteQ ? `空心 = 那天没有匹配的${noteLabel}` : "空心 = 那天没有记录";
     legend.innerHTML = `<span>少</span><i class="wk-hc lv1"></i><i class="wk-hc lv2"></i>`
       + `<i class="wk-hc lv3"></i><i class="wk-hc lv4"></i><span>多</span>`
-      + `<i class="wk-hc lv0 wk-lgsplit"></i><em>空心 = 那天没有记录</em>`;
+      + `<i class="wk-hc lv0 wk-lgsplit"></i><em>${esc(empty)}</em>`;
   }
   const st = $("#wk-ov-stat"); if (st) st.innerHTML = statHtml;
   const hint = $("#wk-ov-hint");
   if (hint) {
-    const sinceTxt = since && w.from < since
-      ? `专注和任务记录从 ${Number(since.slice(5, 7))} 月 ${Number(since.slice(8, 10))} 日开始，之前的日子没有数据。`
-      : "";
-    hint.textContent = `${sinceTxt}点一天看当天明细 · 长按一天跳到那天的安排`;
+    let sinceTxt = "";
+    if (since && w.from < since) {
+      sinceTxt = noteMode
+        ? `${noteLabel}从 ${Number(since.slice(5, 7))} 月 ${Number(since.slice(8, 10))} 日开始，之前的日子没有记录。`
+        : `专注和任务记录从 ${Number(since.slice(5, 7))} 月 ${Number(since.slice(8, 10))} 日开始，之前的日子没有数据。`;
+    }
+    hint.textContent = noteMode
+      ? `${sinceTxt}点一天看当天${noteQ ? `匹配「${noteQ}」的` : ""}${noteLabel} · 长按一天跳到那天的安排`
+      : `${sinceTxt}点一天看当天明细 · 长按一天跳到那天的安排`;
   }
 
   wkOvSyncFilh();
@@ -4020,7 +4116,7 @@ function wkOvRender() {
         c.addEventListener(ev, () => { if (timer) { clearTimeout(timer); timer = null; } }));
       c.onclick = () => {
         if (c.dataset.held === "1") { c.dataset.held = ""; return; }
-        wkOvDaySheet(day);
+        wkOvDaySheet(day, noteMode ? metric : "", noteQ);
       };
     });
   }
@@ -4035,6 +4131,7 @@ function wkOvSyncFilh() {
 function wkOvAvgFmt(v, metric) {
   if (metric === "task") return `${Math.max(0, Math.round(v))} 件`;
   if (metric === "runs") return `${Math.max(0, Math.round(v))} 场`;
+  if (metric === "mark" || metric === "analysis") return `${Math.max(0, Math.round(v))} 条`;
   const m = Math.max(0, Math.round(v));
   return m >= 60 ? `${Math.floor(m / 60)}h${wkPad(m % 60)}` : `${m} 分`;
 }
@@ -4106,8 +4203,9 @@ function wkOvGoDay(day) {
   } catch (e) { /* 那天不在当前月历里就只切日期 */ }
 }
 
-/* 点一格：当天明细。专注 / 任务 / 班次 三行，不画图。 */
-async function wkOvDaySheet(day) {
+/* 点一格：当天明细。专注 / 任务 / 班次 三行，不画图。
+   从「批注 / 分析记录」热力图点进来时，kind 指定先看哪一类，q 是当前正文关键词。 */
+async function wkOvDaySheet(day, kind, q) {
   const title = `${Number(day.slice(5, 7))} 月 ${Number(day.slice(8, 10))} 日 · 周${wkWeekName(wkDowNo(day))}`;
   openSheet(title, `<div class="wk-ov-d"><div class="wk-ov-dloading">正在读取…</div></div>`);
   try { $("#sheet").classList.add("above-gs"); } catch (e) {}
@@ -4152,14 +4250,32 @@ async function wkOvDaySheet(day) {
   const focusMin2 = runs.reduce((x, r) => x + r.mins, 0);
   const focusTitle = runs.length ? `专注 · ${runs.length} 场 · ${focusMin2} 分钟` : "专注";
   const taskTitle = tasks.length ? `任务 · 完成 ${doneN} / ${tasks.length}` : "任务";
-  // 批注：和「记录 · 批注」同一份数据（notes kind=mark），这儿写的就是那儿看到的
-  const marks = d.marks || [];
-  const markBody = marks.length
-    ? marks.map((m) => `<div class="wk-ov-drow wk-mkrow"><b>${esc(String(m.content || "").slice(0, 120))}</b>
+
+  // 批注 / 分析记录：和「记录」里同一份 notes 数据。关键词按正文 + 标签匹配，跟热力图计数同一口径
+  const qText = String(q || "").trim();
+  const qq = qText.toLowerCase();
+  const noteHit = (m) => {
+    if (!qq) return true;
+    if (String(m.content || "").toLowerCase().includes(qq)) return true;
+    let tags = m.tags;
+    if (typeof tags === "string") {
+      try { tags = JSON.parse(tags); } catch (e) { tags = []; }
+    }
+    return Array.isArray(tags) && tags.some((t) => String(t).toLowerCase().includes(qq));
+  };
+  const marks = (d.marks || []).filter(noteHit);
+  const analysis = (d.analysis || []).filter(noteHit);
+  const noteBody = (arr, label) => arr.length
+    ? arr.map((m) => `<div class="wk-ov-drow wk-mkrow"><b>${esc(String(m.content || "").slice(0, 140))}</b>
         <em>${esc(String(m.created_at || "").slice(11, 16) || "")}</em></div>`).join("")
-    : `<div class="wk-ov-dempty">这一天还没有批注</div>`;
-  box.innerHTML = `<div class="wk-ov-d">${sec(focusTitle, focusBody)}${sec(taskTitle, taskBody)}${sec("班次", shiftBody)}`
-    + `${sec(marks.length ? `批注 · ${marks.length} 条` : "批注", markBody)}`
+    : `<div class="wk-ov-dempty">${qq ? `这一天没有匹配「${esc(qText)}」的${label}` : `这一天还没有${label}`}</div>`;
+  const markSec = () => sec(`批注${qText ? ` · 「${qText}」` : ""}${marks.length ? ` · ${marks.length} 条` : ""}`, noteBody(marks, "批注"));
+  const anaSec = () => sec(`分析记录${qText ? ` · 「${qText}」` : ""}${analysis.length ? ` · ${analysis.length} 条` : ""}`, noteBody(analysis, "分析记录"));
+  const noteSecs = kind === "analysis"
+    ? anaSec() + (marks.length ? markSec() : "")
+    : markSec() + (analysis.length ? anaSec() : "");
+  const baseSecs = sec(focusTitle, focusBody) + sec(taskTitle, taskBody) + sec("班次", shiftBody);
+  box.innerHTML = `<div class="wk-ov-d">${kind ? noteSecs + baseSecs : baseSecs + noteSecs}`
     + `<button type="button" class="wk-ov-mkadd" id="wk-ov-mkadd">写一条批注</button></div>`;
   const mk = $("#wk-ov-mkadd");
   if (mk) mk.onclick = () => wkOvMarkAdd(day);

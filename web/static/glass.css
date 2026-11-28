@@ -1,0 +1,191 @@
+/* ======== Liquid Glass：全项目唯一的一份实现（GLASS:BEGIN） ========
+   规矩（改动前先读）：
+   1. 组件规则里不许再写 backdrop-filter / 玻璃底色 / 玻璃描边，只认 --gls-* 这组 token。
+   2. 新加胶囊：把选择器加进本文件下面两处清单，不要复制粘贴另一套玻璃。
+   3. 档位由 html[data-glass] 决定（通透 / 标准 / 厚实 / 实心），值只在这里定义一次。
+   4. 有 4 个 Agent 并行改这个项目：本文件归「玻璃」这一条线独占，别的改动不进这里。 */
+
+/* ---- 默认 = 标准（深色）：没写 data-glass 时也成立 ---- */
+:root{
+  --gls-f:blur(12px) saturate(1.7);
+  --gls-f-lg:blur(20px) saturate(1.6);      /* 大面板封顶 20px，车机上再高就是白烧 GPU */
+  --gls-fill-hi:rgba(255,255,255,.10);
+  --gls-fill-lo:rgba(255,255,255,.045);
+  --gls-card-hi:rgba(255,255,255,.075);
+  --gls-card-lo:rgba(255,255,255,.035);
+  --gls-edge:rgba(255,255,255,.26);
+  --gls-hi:inset 0 1px 0 rgba(255,255,255,.55),inset 0 -.5px 0 rgba(255,255,255,.10);
+  --gls-sh:0 6px 16px rgba(0,0,0,.28),0 1px 4px rgba(0,0,0,.20);
+  --gls-sh-lg:0 20px 48px rgba(0,0,0,.50),0 2px 10px rgba(0,0,0,.35);
+}
+
+/* ---- 四档（深色） ---- */
+html[data-glass="clear"]{
+  --gls-f:blur(6px) saturate(1.9); --gls-f-lg:blur(14px) saturate(1.8);
+  --gls-fill-hi:rgba(255,255,255,.055); --gls-fill-lo:rgba(255,255,255,.020);
+  --gls-card-hi:rgba(255,255,255,.045);--gls-card-lo:rgba(255,255,255,.020);
+  --gls-edge:rgba(255,255,255,.18);
+  --gls-hi:inset 0 1px 0 rgba(255,255,255,.42),inset 0 -.5px 0 rgba(255,255,255,.08);
+  --gls-sh:0 6px 16px rgba(0,0,0,.20),0 1px 4px rgba(0,0,0,.16);
+}
+html[data-glass="standard"]{
+  --gls-f:blur(12px) saturate(1.7); --gls-f-lg:blur(20px) saturate(1.6);
+}
+html[data-glass="deep"]{
+  --gls-f:blur(18px) saturate(1.5); --gls-f-lg:blur(20px) saturate(1.5);
+  --gls-fill-hi:rgba(255,255,255,.22); --gls-fill-lo:rgba(255,255,255,.10);
+  --gls-card-hi:rgba(255,255,255,.16); --gls-card-lo:rgba(255,255,255,.08);
+  --gls-edge:rgba(255,255,255,.30);
+  --gls-hi:inset 0 1px 0 rgba(255,255,255,.34),inset 0 -.5px 0 rgba(255,255,255,.06);
+  --gls-sh:0 8px 22px rgba(0,0,0,.42),0 1px 4px rgba(0,0,0,.28);
+}
+/* 实心：不跑滤镜，纯色 + 顶面高光。车机掉帧 / 关玻璃时用它，观感等于原来的磨砂 */
+html[data-glass="solid"]{
+  --gls-f:none; --gls-f-lg:none;
+  --gls-fill-hi:rgba(56,56,60,.92); --gls-fill-lo:rgba(38,38,42,.94);
+  --gls-card-hi:rgba(50,50,54,.92); --gls-card-lo:rgba(34,34,38,.94);
+  --gls-edge:rgba(255,255,255,.14);
+  --gls-hi:inset 0 1px 0 rgba(255,255,255,.16),inset 0 -.5px 0 rgba(0,0,0,.20);
+  --gls-sh:0 4px 14px rgba(0,0,0,.34),0 1px 3px rgba(0,0,0,.24);
+}
+
+/* ---- 四档（浅色）：只换 token，组件零覆盖 ---- */
+html[data-theme="light"]{
+  --gls-f-lg:blur(20px) saturate(1.9);
+  /* 浅色胶囊留白（同心率胶囊），大面板单独放透：卡面能透出背景 60%，才不是一张白纸 */
+  --gls-fill-hi:rgba(255,255,255,.62); --gls-fill-lo:rgba(232,238,246,.44);
+  --gls-card-hi:rgba(255,255,255,.24); --gls-card-lo:rgba(214,224,238,.12);
+  --gls-edge:rgba(0,0,0,.14);
+  --gls-hi:inset 0 1px 0 rgba(255,255,255,.85),inset 0 -1px 0 rgba(0,0,0,.05);
+  --gls-sh:0 4px 14px rgba(16,26,50,.10),0 1px 3px rgba(16,26,50,.06);
+  --gls-sh-lg:0 10px 28px rgba(16,26,50,.10),0 2px 8px rgba(16,26,50,.05);
+}
+html[data-theme="light"][data-glass="clear"]{
+  --gls-fill-hi:rgba(255,255,255,.30); --gls-fill-lo:rgba(255,255,255,.16);
+  --gls-card-hi:rgba(255,255,255,.30); --gls-card-lo:rgba(220,230,242,.18);
+  --gls-edge:rgba(0,0,0,.06);
+}
+html[data-theme="light"][data-glass="deep"]{
+  --gls-fill-hi:rgba(255,255,255,.82); --gls-fill-lo:rgba(255,255,255,.64);
+  --gls-card-hi:rgba(255,255,255,.62); --gls-card-lo:rgba(232,238,246,.44);
+  --gls-edge:rgba(0,0,0,.14);
+}
+html[data-theme="light"][data-glass="solid"]{
+  --gls-fill-hi:#ffffff; --gls-fill-lo:#f3f3f6;
+  --gls-card-hi:#ffffff; --gls-card-lo:#f7f7fa;
+  --gls-edge:rgba(0,0,0,.10);
+}
+
+/* ---- 把 token 接回项目原有的两套变量名（主站 --glass-*，待机 #sb --sb-*） ---- */
+:root{
+  --glass-blur:var(--gls-f);
+  --glass-lines:var(--gls-edge);
+  --glass-bg:linear-gradient(180deg,var(--gls-fill-hi),var(--gls-fill-lo));
+  --glass-shine:var(--gls-hi);
+  --glass-shadow:var(--gls-sh);
+  --glass-line:var(--gls-edge);
+}
+#sb{
+  --sb-blur:var(--gls-f);
+  --sb-rim:var(--gls-edge);
+  --sb-spec:var(--gls-hi);
+  --sb-fill-hi:var(--gls-fill-hi); --sb-fill-lo:var(--gls-fill-lo);
+  --sb-card-hi:var(--gls-card-hi); --sb-card-lo:var(--gls-card-lo);
+  --sb-pill-sh:var(--gls-hi),var(--gls-sh);
+  --sb-card-sh:var(--gls-hi),var(--gls-sh-lg);
+}
+/* 浅色待机不是一整片纯白：给一层极轻的冷调渐变 + 顶面反光，玻璃才透得出东西。
+   纯白底上任何半透明白都是“纸”，这一步是浅色液态玻璃成立的前提 */
+html[data-theme="light"] #sb{
+  --sb-bg:linear-gradient(180deg,#fdfefe 0%,#f0f4f9 52%,#e5ebf4 100%);
+  --sb-sheen:radial-gradient(120% 80% at 12% 0%,rgba(255,255,255,.55),rgba(255,255,255,0) 62%);
+}
+/* 浅色那一段在 style.css 里用了更高优先级，这里同优先级补一份，保证 token 一路生效 */
+html[data-theme="light"] #sb{
+  --sb-blur:var(--gls-f);
+  --sb-rim:var(--gls-edge);
+  --sb-spec:var(--gls-hi);
+  --sb-fill-hi:var(--gls-fill-hi); --sb-fill-lo:var(--gls-fill-lo);
+  --sb-card-hi:var(--gls-card-hi); --sb-card-lo:var(--gls-card-lo);
+  --sb-pill-sh:var(--gls-hi),var(--gls-sh);
+  --sb-card-sh:var(--gls-hi),var(--gls-sh-lg);
+}
+
+/* ---- 唯一的「上玻璃」两处清单：加胶囊只加名字，不写第二套 CSS ---- */
+/* 待机页：胶囊 / 圆钮 / 设置页控件 / 卡片。页码点(5px)、呼吸点、固定/翻转窄条只给 token 颜色，
+   不上模糊——它们看不见，却每颗都要一个合成层，待机页同屏能省 9 层 */
+#sb :is(.sb-back,.sb-cap,.sb-focus,.sb-hr,.sb-mlyr-side,.sb-mu-chip,.sb-mu-rail,.sb-mlyr-card,
+        .sb-mu-ctl button,.sb-mup-back,.sb-mup-tabs button,.sb-mup-q input,
+        .sb-set-btn,.sb-set-seg,.sb-set-step,.sb-set-sw,.sb-set-card,.sb-set-apply,
+        .sb-wo-zone,
+        .sb-cp-btn,.sb-cp-ok,.sb-cp-cancel,.sb-cp-link,.sb-cp-retry,.sb-cp-badge,.sb-cp-tip,
+        .sb-cp-hr,.sb-cp-cap){
+  -webkit-backdrop-filter:var(--gls-f);
+  backdrop-filter:var(--gls-f);
+}
+/* 待机页大面板（今日盈亏 / 心率体能 / 月历 / 待办 …）：卡片跟胶囊同一套 token，只是模糊档更大一档 */
+#sb :is(.sb-glass){
+  -webkit-backdrop-filter:var(--gls-f-lg);
+  backdrop-filter:var(--gls-f-lg);
+}
+/* 主站：底部标签栏 / 顶栏三条 / 弹层头 / 播放条 / 分页 / 更多 / 分段控件 / AI 条 */
+:is(.tabbar,.tab-thumb,.topbar .top-left,.topbar .top-right,.topbar .top-mid,
+    .dg-head,.dg-player,.wk-ov-nav,.wk-ov-fil,.toast,.pg-pill,.more-row,
+    .sheet-head b,.sheet-head .icon-btn,#dg-newbar button,#ptr,
+    .seg,.seg-stick>.seg,.sheet.ai-float-sheet .sheet-body){
+  -webkit-backdrop-filter:var(--gls-f-lg);
+  backdrop-filter:var(--gls-f-lg);
+}
+/* 胶囊类小件用薄雾一档，大面板用大档：同一份 token，不同粒度 */
+:is(.sheet-head b,.sheet-head .icon-btn,.pg-pill,.more-row,#dg-newbar button,#ptr,.seg,.wk-ov-nav .icon-btn){
+  -webkit-backdrop-filter:var(--gls-f);
+  backdrop-filter:var(--gls-f);
+}
+
+/* ---- 降级：不支持滤镜 / 系统开了「降低透明度」时一律退回实心，不留半截玻璃 ---- */
+@supports not ((backdrop-filter:blur(2px)) or (-webkit-backdrop-filter:blur(2px))){
+  :root,#sb{--gls-f:none;--gls-f-lg:none}
+}
+@media (prefers-reduced-transparency:reduce){
+  :root{--gls-f:none;--gls-f-lg:none}
+  html[data-theme="dark"]{--gls-fill-hi:rgba(255,255,255,.16);--gls-fill-lo:rgba(255,255,255,.10)}
+  html[data-theme="light"]{--gls-fill-hi:rgba(255,255,255,.86);--gls-fill-lo:rgba(255,255,255,.70)}
+}
+/* GLASS:END */
+
+/* ===== 待机整屏弹层：和待机页同一层底色 + 同一张封面氛围 =====
+   底色来自 --sb-bg（浅色冷调渐变 / 深色纯黑），氛围层用 --sb-amb-img（由 app-standby.js 注入）。
+   .sb-mlyr 本身透明、直接吃全屏氛围，不在这里重复。 */
+#sb .sb-set .sheet-body,
+#sb .sb-peek .sheet-body,
+#sb .sb-due .sheet-body,
+#sb .sb-mup .sheet-body,
+#sb .sb-cp-sheet .sheet-body{
+  background:var(--sb-bg);
+}
+#sb .sb-set .sheet-body::before,
+#sb .sb-peek .sheet-body::before,
+#sb .sb-due .sheet-body::before,
+#sb .sb-mup .sheet-body::before,
+#sb .sb-cp-sheet .sheet-body::before{
+  content:"";position:absolute;inset:-12%;z-index:0;pointer-events:none;
+  background:var(--sb-amb-img,none) center/cover no-repeat;
+  filter:blur(28px) saturate(1.15);
+  opacity:0;transition:opacity .5s ease;
+}
+#sb.sb-amb-on .sb-set .sheet-body::before,
+#sb.sb-amb-on .sb-peek .sheet-body::before,
+#sb.sb-amb-on .sb-due .sheet-body::before,
+#sb.sb-amb-on .sb-mup .sheet-body::before,
+#sb.sb-amb-on .sb-cp-sheet .sheet-body::before{opacity:.30}
+html[data-theme="light"] #sb.sb-amb-on .sb-set .sheet-body::before,
+html[data-theme="light"] #sb.sb-amb-on .sb-peek .sheet-body::before,
+html[data-theme="light"] #sb.sb-amb-on .sb-due .sheet-body::before,
+html[data-theme="light"] #sb.sb-amb-on .sb-mup .sheet-body::before,
+html[data-theme="light"] #sb.sb-amb-on .sb-cp-sheet .sheet-body::before{
+  opacity:.30;filter:blur(28px) saturate(1.2) brightness(1.02);
+}
+@media (prefers-reduced-transparency: reduce){
+  #sb .sb-set .sheet-body::before,#sb .sb-peek .sheet-body::before,#sb .sb-due .sheet-body::before,
+  #sb .sb-mup .sheet-body::before,#sb .sb-cp-sheet .sheet-body::before{display:none}
+}

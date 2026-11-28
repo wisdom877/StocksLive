@@ -158,6 +158,7 @@ function sbState() {
       dash: null, dashAt: 0, quotes: null, quotesAt: 0, dashBusy: false, quoteBusy: false,
       stocks: null, stocksAt: 0, stockBusy: false,
       downX: 0, downY: 0, downAt: 0, downEl: null, photoTimer: null,
+      anim: 0, animUntil: 0,
     };
   }
   return state.sb;
@@ -168,6 +169,9 @@ function sbIsOn() { return !!(state.sb && state.sb.on); }
 /* ---------- 建 DOM（只建一次） ---------- */
 /* ---------- CarPlay：第 7 页是壳的原生图层，网页只做入口与状态 ---------- */
 var SB_CP_LAST = -1;
+/* 壳报上来的能力位：目前只有 stage（原生画面能跟手滑出 / 滑回）。旧壳没有这一位，
+   网页就退回原来「一把收起」的做法，不能对着不认识的壳发新指令。 */
+var sbCpCaps = {};
 
 function sbCarPlayMsg(payload) {
   try {
@@ -180,6 +184,8 @@ function sbCarPlayMsg(payload) {
 function sbCarPlaySheet(show, ssid, note, wifi) {
   const sheet = $("#sb-cp-sheet");
   if (!sheet) return;
+  const box = $("#sb");
+  if (box) box.classList.toggle("sb-cp-sheet-open", !!show);
   if (!show) {
     sheet.classList.remove("on");
     sheet.classList.add("hidden");
@@ -194,6 +200,8 @@ function sbCarPlaySheet(show, ssid, note, wifi) {
   const h1 = $("#sb-cp-h1"), p = $("#sb-cp-p");
   if (form) form.classList.toggle("hidden", !has);
   if (nowifi) nowifi.classList.toggle("hidden", has);
+  const body = sheet.querySelector(".sb-cp-body");
+  if (body) body.classList.toggle("sb-cp-empty", !has);
   if (h1) h1.textContent = has ? "连接 CarPlay" : "没有 Wi-Fi";
   if (p) p.textContent = has
     ? "CarPlay 走本机局域网，需要先连一个 Wi-Fi。Wi-Fi 可以没有互联网，手机数据照样走蜂窝。"
@@ -218,7 +226,7 @@ function sbCarPlaySubmit() {
     return;
   }
   sbCarPlaySheet(false);
-  sbCarPlayMsg({ cmd: "start", ssid: ssid, password: (pw && pw.value) || "" });
+  sbCarPlayMsg(Object.assign({ cmd: "start", ssid: ssid, password: (pw && pw.value) || "" }, sbCpConfig()));
   sbCarPlaySet("starting", "");
 }
 
@@ -229,11 +237,12 @@ function sbCpWantSet(on) {
   try { localStorage.setItem("sbCpWant", on ? "1" : "0"); } catch (e) {}
 }
 
-/* CarPlay 里左上角就是右上角那颗叉：一次点按停止 CarPlay，不需要长按。 */
+/* CarPlay 里左上角就是右上角那颗叉：和待机返回键一样长按走满一圈才退出。 */
 function sbCarPlayClose() {
   const s = sbState();
   s.cpClosing = true;
   sbCpWantSet(false);
+  sbSetClose(true);
   try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
   sbCarPlaySet("idle", "");
   s.cpClosing = false;
@@ -241,22 +250,54 @@ function sbCarPlayClose() {
 }
 
 /* 左上位在 CarPlay 出画面时换成叉；其余时候仍是长按退出的返回箭头。 */
+/* CarPlay 正在显示原生视频时，下面这层网页只负责 chrome、时钟和兜底心率卡。
+   其余每秒绘制（音乐、歌词、健康、专注、轮播和数据刷新）都被原生画面遮住，
+   继续跑只会和视频抢主线程。 */
+function sbCarPlayVideoOn() {
+  const s = sbState();
+  if (!s.on || s.page !== 6) return false;
+  const page = document.querySelector('#sb .sb-p[data-p="6"]');
+  return !!page && page.dataset.cp === "video";
+}
+
 function sbPaintBackMode() {
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
-  const video = !!page && page.dataset.cp === "video";
+  const s = sbState();
+  // 车机态 chrome 只在车机页出现：连着但人在别的轮播页时，返回键要退回普通返回箭头，
+  // 否则左上角会挂着一颗点了也没用的叉。
+  const video = !!page && s.page === 6 && (page.dataset.cp === "video" || sbCpWant());
   const b = $("#sb-back"), box = $("#sb");
   if (box) box.classList.toggle("sb-cp-video", video);
   if (b) {
-    b.classList.toggle("is-x", video);
-    b.setAttribute("aria-label", video ? "关闭 CarPlay" : "长按退出待机");
+    // 车机页左上角不再单独变成一颗叉：整页和其它待机页同一颗返回箭头，
+    // 长按同样是「退出待机」，行为不再分叉。
+    b.classList.remove("is-x");
+    b.setAttribute("aria-label", "长按退出待机");
   }
+  // 兜底：车机视频层的状态回调偶发晚到/乱序时，CSS 类可能被短暂抹掉。
+  // 这里直接给四颗 chrome 写内联可见性，确保返回 / 固定 / 翻转 / 设置不会只剩一颗。
+  const top = $("#sb .sb-top");
+  const chrome = [b, $("#sb-pin"), $("#sb-flip"), $("#sb-set-btn")];
+  if (top) {
+    top.style.opacity = video ? "1" : "";
+    top.style.visibility = video ? "visible" : "";
+    top.style.pointerEvents = video ? "auto" : "";
+    top.style.zIndex = video ? "26" : "";
+  }
+  chrome.forEach((el) => {
+    if (!el) return;
+    el.style.opacity = video ? "1" : "";
+    el.style.visibility = video ? "visible" : "";
+    el.style.pointerEvents = video ? "auto" : "";
+    el.style.zIndex = video ? "26" : "";
+  });
 }
 
 /* 切后台回来不再要求重新长按：只要这一轮 CarPlay 是用户开着的，就自动续上。 */
 var sbCpResumeAt = 0;
 function sbCpResume() {
   const s = sbState();
-  if (!s.on || document.hidden || !sbCpWant() || s.page !== 6) return;
+  if (!s.on || document.hidden || !sbCpWant() || s.page !== 6 || !sbCpAutoOn()) return;
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
   const st = (page && page.dataset.cp) || "idle";
   if (st === "video" || st === "starting" || st === "auth" || st === "ready") return;
@@ -265,38 +306,78 @@ function sbCpResume() {
   sbCarPlayStart();
 }
 
+var sbCpWaitTimer = 0, sbCpWaitAt = 0;
+function sbCpWaitArm(state) {
+  clearTimeout(sbCpWaitTimer); sbCpWaitTimer = 0;
+  if (state !== "starting" && state !== "auth" && state !== "ready") return;
+  sbCpWaitAt = Date.now();
+  sbCpWaitTimer = setTimeout(() => {
+    const page = document.querySelector('#sb .sb-p[data-p="6"]');
+    const st = page && page.dataset.cp;
+    if (!sbState().on || sbState().page !== 6) return;
+    if (st !== "starting" && st !== "auth" && st !== "ready") return;
+    // 原生探测/握手没有回调时，网页不能陪着无限等。到点主动收掉会话并交还页面。
+    try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
+    sbCarPlaySet("failed", "连接超时，长按 Hello 重试");
+  }, 18000);
+}
+
 function sbCarPlaySet(state, message) {
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
   if (!page) return;
+  if (state === "caps") {
+    sbCpCaps = {};
+    (message || "").split(",").forEach((k) => { const t = k.trim(); if (t) sbCpCaps[t] = true; });
+    return;
+  }
+  // 每秒一行运行状态（原生 videoQueue 的实测值）：只写设置页底部那行，不参与状态机。
+  if (state === "stats") {
+    const stats = $("#sb-cp-stats");
+    if (stats) { stats.textContent = message || ""; stats.classList.remove("hidden"); }
+    return;
+  }
   const s = sbState();
   const prev = page.dataset.cp;
+  // 失败不是“正在连接”，而是一条已经结束的死路：必须立刻交出页面控制权。
+  // 以前这里把 sbCpWant 留着，页面继续按“车机态”自动固定，左上角退化成只能长按的叉，
+  // 底部圆点/滑动也被锁死，所有终端都表现为“只能长按 Hello 重试”。现在失败即解锁。
+  if (state === "failed") {
+    sbCpWantSet(false);
+    if (s.pinned || s.pinAuto) sbPinAuto(false);
+    try { sbCarPlayMsg({ cmd: "stop" }); } catch (e) {}
+  }
   page.dataset.cp = state;
   page.classList.toggle("sb-cp-live", state === "video");
+  sbCpWaitArm(state);
+  if (state === "idle" || state === "failed") {
+    const stats = $("#sb-cp-stats");
+    if (stats) { stats.classList.add("hidden"); stats.textContent = ""; }
+  }
   const box = $("#sb");
-  if (box) box.classList.toggle("sb-cp-video", state === "video");
+  if (box) box.classList.toggle("sb-cp-failed", state === "failed");
+  const videoChrome = s.page === 6 && (state === "video" || sbCpWant());
+  if (box) box.classList.toggle("sb-cp-video", videoChrome);
+  if (state === "video") {
+    sbCplGuideArmed = true;
+    sbCplGuideUntil = 0;
+    clearTimeout(sbCplGuideTimer);
+  } else {
+    sbCplGuideArmed = false;
+    sbCplGuideUntil = 0;
+    clearTimeout(sbCplGuideTimer);
+    const hr = $("#sb-cp-hr");
+    if (hr) hr.classList.remove("guiding");
+  }
+  if (state !== "video" && state !== "starting" && state !== "auth" && state !== "ready") sbSetClose(true);
 
   // 原生右上角的叉 → 网页左上角的叉：网页接管后让壳把原生那颗收起来。
   if (state === "video") sbCarPlayMsg({ cmd: "chrome", close: 0 });
 
   if (state === "video") {
     sbCpWantSet(true);
-    if (!s.pinned || !s.pinAuto) {
-      s.pinned = true;
-      s.pinAuto = true;
-      sbPinHold();
-      sbPinSave();
-      sbPaintPin();
-    }
-    if (s.on && s.page !== 6) { s.page = 6; sbGo(6, true); }
-  } else if (sbCpWant()) {
-    // 后台被系统掐断、回前台自动续连时，画面还没回来也要保持固定，别被轮播翻走。
-    if (!s.pinned || !s.pinAuto) {
-      s.pinned = true;
-      s.pinAuto = true;
-      sbPinHold();
-      sbPinSave();
-      sbPaintPin();
-    }
+    // 不再自动「固定」页面：车机连着时也要能左右轮播，离页用 overlay 收起而不是 stop。
+    // 只有这一轮刚接通时才把页面带回来；已经在别的轮播页上时不要把人拽走。
+    if (s.on && s.page !== 6 && prev !== "video") { s.page = 6; sbGo(6, true); }
   }
 
   // 原生叉自己点掉时也会回 idle；靠文案区分“进后台被停”和“用户主动停止”。
@@ -310,17 +391,22 @@ function sbCarPlaySet(state, message) {
   const hint = $("#sb-cp-hint");
   if (hint) {
     let text = "长按 Hello 进入 CarPlay";
-    if (state === "starting") text = "正在启动 CarPlay…";
+    if (state === "starting") text = message || "正在启动 CarPlay…";
     else if (state === "auth") text = message || "正在认证配件…";
     else if (state === "ready") text = message || "已连接，正在协商画面…";
     else if (state === "video") text = "CarPlay 已连接";
-    else if (state === "failed") text = message || "启动失败，长按重试";
+    else if (state === "failed") text = (message || "启动失败") + " · 可滑动离开，长按重试";
     else if (state === "credentials") text = "需要先连接 Wi-Fi";
     hint.textContent = text;
   }
   if (state !== "credentials") sbCarPlaySheet(false);
   if (state === "failed" && prev !== "failed") sbCarPlayFailHaptic();
   sbPaintBackMode();
+  // 画面接通后原生可能还会补发 ready / geometry，晚一点再压一次，避免 chrome 被后续回调抹掉。
+  if (state === "video") {
+    setTimeout(() => { if (s.page === 6) sbPaintBackMode(); }, 260);
+    setTimeout(() => { if (s.page === 6) sbPaintBackMode(); }, 900);
+  }
   sbCpHeartPaint();
 }
 
@@ -392,7 +478,10 @@ window.wkCarPlayState = function (payload) {
 function sbCarPlayStart() {
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
   if (page) sbCpWantSet(true);
-  if (!sbCarPlayMsg({ cmd: "start" })) { sbCarPlaySet("failed", "当前壳版本不支持 CarPlay"); return; }
+  const c = sbCpConfig();
+  if (!sbCarPlayMsg({ cmd: "start", width: c.width, height: c.height, maxFPS: c.maxFPS, codec: c.codec, audio: c.audio })) {
+    sbCarPlaySet("failed", "当前壳版本不支持 CarPlay"); return;
+  }
   sbCarPlaySet("starting", "");
 }
 
@@ -403,16 +492,30 @@ function sbCarPlayForget() {
 
 function sbCarPlayPage(idx) {
   const box = $("#sb");
+  const s = sbState();
   if (box) box.classList.toggle("sb-cp-page", idx === 6);
   if (idx === 6) {
     sbCarPlayMsg({ cmd: "geometry", flip: box && box.classList.contains("sb-flip") ? 1 : 0 });
+    // 滑回/停在本页，右侧心率胶囊复位。
+    // 等卡片滑完再让胶囊淡回来，别在补间中途突然弹出。
+    setTimeout(() => {
+      if (sbCpVideo() && sbState().page === 6) sbCarPlayMsg({ cmd: "rail", show: 1 });
+    }, 460);
+    // 轮播回来时把画面放回去：这一轮会话从头到尾没停过，不需要重新握手。
+    // 拖动补完动画期间由原生自己归位，这里别再插一条 overlay 把它拽回正中。
+    const setEl = $("#sb-set");
+    if (!s.cpSettling && sbCpVideo() && !(setEl && setEl.classList.contains("on"))) {
+      sbCarPlayMsg({ cmd: "overlay", covered: 0 });
+    }
+    // 若这期间被系统停过（切后台），回到车机页要能自己续上，不用再长按 Hello。
+    if (sbCpWant()) setTimeout(() => { if (sbState().on && sbState().page === 6) sbCpResume(); }, 240);
     sbDimOff();
     sbCpHeartPaint();
   } else if (SB_CP_LAST === 6) {
-    sbCarPlayMsg({ cmd: "stop" });
+    // 划到别的页面只收起原生画面，不断连接：车机那边继续送流，回来就是活的。
+    // 拖动时原生画面已经在滑出去了，等它滑完再收，不要提前隐藏。
+    if (sbCpVideo() && !s.cpSettling) sbCarPlayMsg({ cmd: "overlay", covered: 1 });
     sbCarPlaySheet(false);
-    sbCpWantSet(false);
-    if (sbState().pinAuto) sbPinAuto(false);
     sbDimArm();
   }
   sbPaintBackMode();
@@ -503,8 +606,10 @@ function sbBuild() {
   <div class="sb-boot" id="sb-boot" hidden aria-hidden="true">
     <strong class="sb-boot-word">Wisdom</strong>
     <em class="sb-boot-sub">黄杨科技</em>
+    <em class="sb-boot-hint" id="sb-boot-hint">长时间没反应？检查一下网络连接</em>
   </div>
   <div class="sb-stage">
+    <div class="sb-amb" id="sb-amb" aria-hidden="true"><img id="sb-amb-img" alt=""></div>
     <i class="sb-safe" aria-hidden="true"></i>
     <div class="sb-top">
       <button type="button" class="sb-back" id="sb-back" aria-label="长按退出待机">
@@ -515,6 +620,7 @@ function sbBuild() {
           <circle class="sb-ring-fg" id="sb-ring-fg" cx="20" cy="20" r="18.5"/>
         </svg>
       </button>
+      <button type="button" class="sb-set-btn" id="sb-set-btn" aria-label="打开设置">设置</button>
 
       <button type="button" class="sb-focus" id="sb-focus" hidden>
         <i class="sb-fdot"></i><span id="sb-focus-t"></span>
@@ -543,6 +649,7 @@ function sbBuild() {
           </div>
         </div>
         <div class="sb-cal-r sb-glass">
+          <div class="sb-cal-mh" style="display:none"><span class="sb-cal-year" id="sb-cal-year">—</span><b id="sb-cal-month">—</b></div>
           <div class="sb-grid-h"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
           <div class="sb-grid" id="sb-grid"></div>
         </div>
@@ -676,6 +783,7 @@ function sbBuild() {
           </div>
 
           <div class="sb-cp-cap sb-cpl" id="sb-cp-live">
+            <div class="sb-cpl-guide" id="sb-cpl-guide" aria-hidden="true"><span>切<br>换<br>音<br>道</span></div>
             <div class="sb-cpl-track">
               <div class="sb-cpl-page on" data-k="zone"><span class="sb-cpl-k">当前</span><b id="sb-cpl-v-zone">静息</b><span class="sb-cpl-u" id="sb-cpl-u-zone">Z1</span></div>
               <div class="sb-cpl-page" data-k="range"><span class="sb-cpl-k">本次</span><b id="sb-cpl-v-range">—</b><span class="sb-cpl-u">BPM</span></div>
@@ -696,10 +804,21 @@ function sbBuild() {
 
     <div class="sb-mlyr hidden" id="sb-mlyr">
       <div class="sheet-body">
+        <div class="sb-mlyr-pane" id="sb-mlyr-pane" aria-hidden="true">
+          <div class="sb-mlyr-card" id="sb-mlyr-card">
+            <div class="sb-mlyr-breath">
+              <img class="sb-mlyr-art" id="sb-mlyr-art" alt="" aria-hidden="true">
+              <div class="sb-mlyr-ph" aria-hidden="true">♪</div>
+            </div>
+          </div>
+        </div>
         <div class="sheet-head">
           <b id="sb-mlyr-t">歌词</b>
           <button type="button" class="icon-btn" id="sb-mlyr-x" aria-label="关闭">✕</button>
         </div>
+        <button type="button" class="sb-mlyr-side" id="sb-mlyr-side" aria-pressed="false" aria-label="封面分栏">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.2" y="4.4" width="6.6" height="11.2" rx="1.8"></rect><rect x="11.6" y="7" width="6.2" height="1.6" rx=".8"></rect><rect x="11.6" y="10.4" width="6.2" height="1.6" rx=".8"></rect><rect x="11.6" y="13.8" width="4.2" height="1.6" rx=".8"></rect></svg>
+        </button>
         <div class="sb-mlyr-list" id="sb-mlyr-list"></div>
       </div>
     </div>
@@ -747,9 +866,7 @@ function sbBuild() {
             <div class="sb-cp-eyebrow"><i></i>WI-FI</div>
             <div class="sb-cp-h1" id="sb-cp-h1">连接 CarPlay</div>
             <div class="sb-cp-p" id="sb-cp-p">CarPlay 走本机局域网，需要先连一个 Wi-Fi。Wi-Fi 可以没有互联网，手机数据照样走蜂窝。</div>
-            <div class="sb-cp-chips">
-              <span>无需互联网</span><span>密码只存本机</span><span>可随时停止</span>
-            </div>
+            <div class="sb-cp-foot">无需互联网 <i>·</i> 密码只存本机 <i>·</i> 可随时停止</div>
           </div>
           <div class="sb-cp-side">
             <div id="sb-cp-form">
@@ -767,13 +884,24 @@ function sbBuild() {
               </div>
             </div>
             <div id="sb-cp-nowifi" class="hidden">
-              <div class="sb-cp-nowifi-t">切换步骤</div>
-              <div class="sb-cp-nowifi-s">设置 → 无线局域网 → 连接一个网络。可以没有互联网，手机数据仍走蜂窝。</div>
-              <button type="button" class="sb-cp-ok" id="sb-cp-wifi-set">打开 Wi-Fi 设置</button>
-              <button type="button" class="sb-cp-cancel" id="sb-cp-retry">重试</button>
+              <div class="sb-cp-nowifi-s">去「设置」连接一个 Wi-Fi，再回来重试。</div>
+              <div class="sb-cp-nowifi-actions">
+                <button type="button" class="sb-cp-ok" id="sb-cp-wifi-set">打开 Wi-Fi 设置</button>
+                <button type="button" class="sb-cp-retry" id="sb-cp-retry">重试</button>
+              </div>
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <div class="sb-set hidden" id="sb-set">
+      <div class="sheet-body">
+        <div class="sheet-head">
+          <b>CarPlay 设置</b>
+        </div>
+        <div class="sb-set-scroll" id="sb-set-scroll"></div>
+        <div class="sb-cp-stats hidden" id="sb-cp-stats"></div>
       </div>
     </div>
 
@@ -786,11 +914,16 @@ function sbBuild() {
         <div class="sb-due-body" id="sb-due-body"></div>
       </div>
     </div>
+
+    <div class="sb-snap" id="sb-snap" hidden aria-hidden="true">
+      <strong class="sb-boot-word">Wisdom</strong>
+      <em class="sb-boot-sub">黄杨科技 · 待机中</em>
+    </div>
 `;
 
   document.body.appendChild(box);
   // 两颗胶囊挂在 #sb 根上：翻转时只转文字，不跟着舞台整体位移
-  ["#sb-back", "#sb-flip", "#sb-pin", "#sb-awake"].forEach((sel) => {
+  ["#sb-back", "#sb-flip", "#sb-pin", "#sb-awake", "#sb-set-btn"].forEach((sel) => {
     const b = box.querySelector(sel);
     if (b) box.appendChild(b);
   });
@@ -800,6 +933,20 @@ function sbBuild() {
   sbBindBackHold();
   sbBindHelloHold();
   $("#sb-flip").addEventListener("click", (e) => { e.stopPropagation(); sbFlip(); });
+  const setBtn = $("#sb-set-btn");
+  if (setBtn) setBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const box = $("#sb-set");
+    // 设置键自己就是返回键：面板开着时再点一次收起，并回到 CarPlay 页（连接不中断）。
+    if (box && !box.classList.contains("hidden") && box.classList.contains("on")) {
+      sbSetClose();
+      if (sbCpWant() || sbCpVideo()) sbGo(6, true);
+      return;
+    }
+    sbSetOpen();
+  });
+  const setBox = $("#sb-set");
+  if (setBox) setBox.addEventListener("pointerdown", (e) => e.stopPropagation(), true);
   box.addEventListener("click", (e) => {
     const hit = e.target.closest("[data-sb-lyr]");
     if (hit && sbState().page === 4) {
@@ -814,11 +961,32 @@ function sbBuild() {
     if (line && SB_LYR.open) {
       const t = Number(line.dataset.t) || 0;
       if (typeof muSend === "function") muSend("seek", t);
+      if (typeof muClockSeek === "function") muClockSeek(t);
       const m = muState(); m.elapsed = t;
-      sbLyrPaint(true);
+      SB_LYR.idx = -2; SB_LYR.holdUntil = 0;      // 下一帧重判句子并跟过去，不重建列表
     }
   }, true);
   $("#sb-mlyr-x").addEventListener("click", (e) => { e.stopPropagation(); sbLyrClose(); });
+  const mlyrSide = $("#sb-mlyr-side");
+  if (mlyrSide) mlyrSide.addEventListener("click", (e) => { e.stopPropagation(); sbCvApply(!SB_CV.on); });
+  const mlyrArt = $("#sb-mlyr-art");
+  if (mlyrArt) {
+    mlyrArt.addEventListener("pointerdown", (e) => { e.stopPropagation(); sbCvTilt(e, true); });
+    mlyrArt.addEventListener("pointermove", (e) => {
+      if (e.pointerType === "mouse" || e.buttons) { e.stopPropagation(); sbCvTilt(e); }
+    });
+    mlyrArt.addEventListener("pointerup", () => sbCvTilt(null));
+    mlyrArt.addEventListener("pointercancel", () => sbCvTilt(null));
+    mlyrArt.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") sbCvTilt(null); });
+    window.addEventListener("pointerup", () => sbCvTilt(null));
+  }
+  // 手指在歌词上滑过（想往回看）：4 秒内不抢滚动，松手后再回到当前句
+  const lyrList = $("#sb-mlyr-list");
+  if (lyrList) {
+    const hold = () => { SB_LYR.holdUntil = performance.now() + 4000; };
+    lyrList.addEventListener("pointerdown", hold, true);
+    lyrList.addEventListener("wheel", hold, { passive: true });
+  }
   const listBtn = $("#sb-mu-listbtn"), searchBtn = $("#sb-mu-searchbtn"), mup = $("#sb-mup");
   if (listBtn) listBtn.addEventListener("click", (e) => { e.stopPropagation(); sbMuPaneOpen("list"); });
   if (searchBtn) searchBtn.addEventListener("click", (e) => { e.stopPropagation(); sbMuPaneOpen("search"); });
@@ -928,8 +1096,13 @@ function sbBuild() {
       if (sbState().land === false) ratio = 1 - ratio;   // 竖屏预览时舞台转过 90°，横坐标方向要翻过来
       ratio = Math.max(0, Math.min(1, ratio));
       if (typeof muSend === "function") muSend("seek", ratio * dur);
-      // 兜底：壳那边 1 秒才会推新进度，先把本地 elapsed 改掉，不然这一秒又被旧值刷回去
+      // 立即把本地播放时钟也移到新位置；否则歌词仍按 seek 前的旧时间走，
+      // 要等壳下一拍推 elapsed 才会追上。
+      if (typeof muClockSeek === "function") muClockSeek(ratio * dur);
       m.elapsed = ratio * dur;
+      if (typeof SB_LYR !== "undefined" && SB_LYR.open) {
+        SB_LYR.idx = -2; SB_LYR.holdUntil = 0;
+      }
       const f = $("#sb-mu-fill");
       if (f) f.style.width = (ratio * 100) + "%";
       const e2 = $("#sb-mu-el");
@@ -971,7 +1144,7 @@ function sbOrient(on) {
 
 /* 进入待机先盖一层极简启动页：等横屏转完、尺寸稳定后再揭开，避免转屏那几秒的错位 */
 var SB_BOOT_MIN = 1400, SB_BOOT_MAX = 3000, SB_BOOT_STABLE = 300;
-var sbBoot = { gen: 0, finished: true, minOk: false, minTimer: 0, maxTimer: 0, stableTimer: 0 };
+var sbBoot = { gen: 0, finished: true, minOk: false, minTimer: 0, maxTimer: 0, stableTimer: 0, hintTimer: 0 };
 
 function sbBootDetach() {
   window.removeEventListener("resize", sbBootNudge);
@@ -1005,6 +1178,15 @@ function sbBootStart() {
   window.addEventListener("orientationchange", sbBootNudge, { passive: true });
   sbBoot.minTimer = setTimeout(() => { sbBoot.minOk = true; sbBootMaybe(); }, SB_BOOT_MIN);
   sbBoot.maxTimer = setTimeout(sbBootFinish, SB_BOOT_MAX);
+  // 正常一秒多就进去了；真卡住（网差、登录态在等）七秒后补一行小字，别让人干等。
+  sbBootHint(false);
+  clearTimeout(sbBoot.hintTimer);
+  sbBoot.hintTimer = setTimeout(() => sbBootHint(true), 7000);
+}
+
+function sbBootHint(on) {
+  const h = $("#sb-boot-hint");
+  if (h) h.classList.toggle("on", !!on);
 }
 
 function sbBootFinish() {
@@ -1012,6 +1194,7 @@ function sbBootFinish() {
   sbBoot.finished = true;
   const gen = sbBoot.gen;
   clearTimeout(sbBoot.minTimer); clearTimeout(sbBoot.maxTimer); clearTimeout(sbBoot.stableTimer);
+  clearTimeout(sbBoot.hintTimer); sbBootHint(false);
   sbBootDetach();
   const box = $("#sb"), el = $("#sb-boot");
   if (box) { sbLayout(); sbGo(sbState().page, true); }
@@ -1029,6 +1212,7 @@ function sbBootAbort() {
   sbBoot.gen++;
   sbBoot.finished = true;
   clearTimeout(sbBoot.minTimer); clearTimeout(sbBoot.maxTimer); clearTimeout(sbBoot.stableTimer);
+  clearTimeout(sbBoot.hintTimer); sbBootHint(false);
   sbBootDetach();
   const box = $("#sb"), el = $("#sb-boot");
   if (el) { el.classList.add("out"); el.hidden = true; }
@@ -1131,6 +1315,7 @@ function sbExitAbort() {
 
 /* ---------- 舞台尺寸 / 安全区 ---------- */
 function sbLayout() {
+  setTimeout(sbFitCols, 0);
   const s = sbState();
   const box = $("#sb");
   if (!box) return;
@@ -1167,11 +1352,17 @@ function sbLayout() {
   else { left = s.flip ? ib : it; right = s.flip ? it : ib; }
   box.style.setProperty("--sb-pl", Math.max(20, left + 20) + "px");
   box.style.setProperty("--sb-pr", Math.max(20, right + 16) + "px");
+  // --sb-u 变了，封面这块要按新尺寸重新采点
+  if (typeof SB_CV !== "undefined" && SB_CV.on && SB_LYR.open) sbCvMount();
   sbGo(s.page, true);
 }
 
 /* ---------- 返回键：长按退出 ---------- */
 var SB_BACK_HOLD = 1200;            // 一圈走完要按住多久（ms）
+function sbCpVideo() {
+  const page = document.querySelector('#sb .sb-p[data-p="6"]');
+  return !!page && page.dataset.cp === "video";
+}
 
 function sbBindBackHold() {
   const btn = $("#sb-back");
@@ -1202,6 +1393,7 @@ function sbBindBackHold() {
       done = true;
       btn.classList.remove("press");
       try { navigator.vibrate && navigator.vibrate(28); } catch (e) {}
+      // 所有页面同一套：长按走满一圈退出待机；车机页正在出画面时 sbClose 会顺手收掉会话。
       sbClose();
       return;
     }
@@ -1211,12 +1403,8 @@ function sbBindBackHold() {
   btn.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    // CarPlay 里这颗按钮已经变成右上角的叉：一次点按直接停，不进长按环。
-    if (cpVideo()) {
-      btn.dataset.cpTap = "1";
-      return;
-    }
-    if (sbState().pinned) return;
+    // CarPlay 自动固定，不能因为 pinned 就拒绝这颗叉的长按；别的情况下固定仍锁住返回键
+    if (!cpVideo() && sbState().pinned) return;
     const pk = $("#sb-peek"), due = $("#sb-due");
     if ((pk && !pk.classList.contains("hidden")) || (due && !due.classList.contains("hidden"))) {
       done = false;
@@ -1236,13 +1424,6 @@ function sbBindBackHold() {
     if (!done) stop();
   };
   btn.addEventListener("pointerup", (e) => {
-    if (btn.dataset.cpTap) {
-      delete btn.dataset.cpTap;
-      stop();
-      e.stopPropagation();
-      sbCarPlayClose();
-      return;
-    }
     if (!done) {
       // 没按满就松手 = 当作一次轻点：先关面板，面板都关着就什么都不做（退出必须长按）
       stop();
@@ -1375,8 +1556,7 @@ function sbRestorePrefs() {
   } catch (e) {}
   if (sbCpWant()) {
     s.page = 6;
-    s.pinned = true;
-    s.pinAuto = true;
+    // 恢复时只落回车机页，不再自动固定：连着也能左右轮播。
   }
 }
 
@@ -1399,6 +1579,7 @@ function sbOpen() {
   box.classList.remove("hidden");
   box.setAttribute("aria-hidden", "false");
   box.classList.add("on");
+  sbSnapHide();
   sbBootStart();
   sbOrient(1);
   if (!s.battTimer) s.battTimer = setInterval(() => { if (sbState().on && !document.hidden) sbAskBatt(); }, 60000);          // 待机一律横屏：壳把 SupportedInterfaceOrientations 切到 landscapeRight
@@ -1444,15 +1625,18 @@ function sbClose(instant) {
   s.pinned = false;
   s.pinAuto = false;
   clearInterval(s.pinTimer); s.pinTimer = null;
+  // 人可能正停在别的轮播页上，会话照样要收干净，不能留下没人管的 CarPlay 连接。
+  const cpLive = sbCpVideo() || sbCpWant();
   sbCpWantSet(false);
   sbPinSave();
   sbPaintPin();
-  if (SB_CP_LAST === 6) sbCarPlayMsg({ cmd: "stop" });
+  if (SB_CP_LAST === 6 || cpLive) sbCarPlayMsg({ cmd: "stop" });
   s.on = false;
   sbBootAbort();
   sbDimOff();
   if (typeof muSend === "function") muSend("stop");
   sbDueHide();
+  sbSetClose(true);
   sbLyrClose(true);
   if (typeof sbMuPaneClose === "function") sbMuPaneClose(true);
   sbAwakeStop();
@@ -1507,23 +1691,126 @@ function sbStopTimers() {
   if (s.tickTimer) { clearInterval(s.tickTimer); s.tickTimer = null; }
 }
 
+/* 回前台立刻向壳要一次真实播放进度，再让整屏歌词重判当前句。
+   后台期间 performance.now 可能停走，只靠本地外推会落到后台前那一句。 */
+function sbResyncMusic() {
+  if (typeof muSend === "function") { try { muSend("refresh"); } catch (e) {} }
+  if (typeof SB_LYR !== "undefined" && SB_LYR.open) {
+    SB_LYR.idx = -2; SB_LYR.lastAt = 0; SB_LYR.holdUntil = 0;
+  }
+}
+
 function sbVis() {
   const s = sbState();
   if (!s.on) return;
-  if (document.hidden) { sbDimOff(); sbStopTimers(); }
-  else {
+  if (document.hidden) {
+    sbDimOff(); sbStopTimers();
+    sbSnapShow();                    // 多任务预览先给完整正脸，别让系统裁掉右栏
+  } else {
+    sbSnapForegroundAt = Date.now();
+    sbSnapHide();
+    sbResyncMusic();
     sbStartTimers();
     sbPaintAll();
     sbPaintPin();
     sbIdleReset();
+    // 切屏回来视口可能被系统改窄过，重算一次并强制落回当前页，否则右栏会停在卡片外
+    setTimeout(() => { if (s.on) sbLayout(); }, 80);
+    setTimeout(() => { if (s.on) sbLayout(); }, 260);
     if (sbCpWant()) setTimeout(() => { if (sbState().on) sbCpResume(); }, 520);
   }
 }
+
+/* 多任务预览卡：只在离开前台时出现，回来就撤，不影响待机本身。
+   之前只靠 focus 撤，iOS 切回来偶尔不发 focus，或 focus 之后又补一个迟到的
+   blur/pagehide，卡就会一直盖在待机上。这里加「回到可见就强制撤」的看门狗，
+   并忽略刚回到前台那一拍的迟到 blur。 */
+var sbSnapTimer = 0;
+var sbSnapWatch = 0;
+var sbSnapProbeTimer = 0;
+var sbSnapRaf = 0;
+var sbSnapForegroundAt = 0;
+function sbSnapProbeStart() {
+  clearTimeout(sbSnapProbeTimer);
+  cancelAnimationFrame(sbSnapRaf);
+  // 先给系统留出抓多任务预览的时间；之后只要 rAF 还能跑，就说明已经回到前台。
+  // iOS 有时回来不派发 focus，visibilityState 也会短暂停在 hidden，只有 rAF 是可靠的。
+  sbSnapProbeTimer = setTimeout(() => {
+    sbSnapRaf = requestAnimationFrame(() => {
+      sbSnapRaf = requestAnimationFrame(() => {
+        const el = $("#sb-snap");
+        if (el && el.classList.contains("on")) sbSnapHide();
+      });
+    });
+  }, 550);
+}
+function sbSnapShow() {
+  const el = $("#sb-snap");
+  if (!el || !sbState().on) return;
+  clearTimeout(sbSnapTimer);
+  clearInterval(sbSnapWatch);
+  el.hidden = false;
+  if (!el.__sbTapHide) {
+    el.__sbTapHide = true;
+    el.addEventListener("pointerdown", (e) => { e.stopPropagation(); sbSnapHide(); }, { passive: true });
+  }
+  requestAnimationFrame(() => { if (el && !el.hidden) el.classList.add("on"); });
+  sbSnapProbeStart();
+  // 只要页面已经回到 visible，最多 900ms 内一定撤掉；不依赖 focus 是否派发。
+  sbSnapWatch = setInterval(() => {
+    if (!document.hidden && document.visibilityState === "visible") sbSnapHide();
+  }, 900);
+}
+function sbSnapHide() {
+  clearTimeout(sbSnapTimer);
+  clearInterval(sbSnapWatch);
+  clearTimeout(sbSnapProbeTimer);
+  cancelAnimationFrame(sbSnapRaf);
+  sbSnapWatch = 0;
+  sbSnapProbeTimer = 0;
+  sbSnapRaf = 0;
+  const el = $("#sb-snap");
+  if (!el) return;
+  el.classList.remove("on");
+  setTimeout(() => { if (el && !el.classList.contains("on")) el.hidden = true; }, 180);
+}
+window.addEventListener("blur", () => {
+  // focus 刚回来又收到一个迟到的 blur：忽略，别把品牌卡重新盖上来
+  if (Date.now() - sbSnapForegroundAt < 700) return;
+  sbSnapShow();
+});
+window.addEventListener("focus", () => {
+  sbSnapForegroundAt = Date.now();
+  clearTimeout(sbSnapTimer);
+  sbSnapHide();
+  sbResyncMusic();
+});
+window.addEventListener("pageshow", () => {
+  sbSnapForegroundAt = Date.now();
+  sbSnapHide();
+  sbResyncMusic();
+});
+window.addEventListener("pagehide", () => {
+  // 迟到的 pagehide 不要在回到前台之后再把品牌卡盖上来
+  if (document.visibilityState === "visible") return;
+  sbSnapShow();
+});
+// 原生壳在 willEnterForeground / didBecomeActive 时主动叫一声。
+// iOS 把 WebView 冻住时，网页自己的 focus / visibilitychange 可能都不来，只有壳能叫醒它。
+window.sbForeground = function () {
+  sbSnapForegroundAt = Date.now();
+  clearTimeout(sbSnapTimer);
+  sbSnapHide();
+  sbResyncMusic();
+  if (sbBoot && !sbBoot.finished && sbBoot.minOk && window.innerWidth > window.innerHeight + 1) sbBootFinish();
+};
 
 function sbKey(e) {
   const s = sbState();
   if (!s.on) return;
   if (e.key === "Escape") {
+    const set = $("#sb-set");
+    if (set && !set.classList.contains("hidden")) { sbSetClose(); return; }
     const pk = $("#sb-peek");
     if (pk && !pk.classList.contains("hidden")) { sbPeekClose(); return; }
     sbClose(); return;
@@ -1539,9 +1826,41 @@ function sbKey(e) {
 var SB_AUTO_IDLE = 20000;
 var SB_AUTO_TURN = 12000;
 
+function sbPref(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+function sbPrefSet(key, val) { try { localStorage.setItem(key, String(val)); } catch (e) {} }
+function sbAutoOn() { return sbPref("sbAuto") !== "0"; }
+function sbAutoSec() {
+  const n = Number(sbPref("sbAutoSec"));
+  return [8, 12, 20].includes(n) ? n : 12;
+}
+function sbCpAutoOn() { return sbPref("sbCpAuto") !== "0"; }
+/* CarPlay 的画面参数：改完先落本地，下次 start 时随配置交给壳。
+   分辨率必须偶数且在 320–3840，帧率只给 30/60（CarPlay 能力表里的合法档）。 */
+const SB_CP_RES = [["1280x720", "720p"], ["1920x1080", "1080p"], ["1024x768", "4:3"]];
+const SB_CP_INFO = { "1280x720": "1280 × 720", "1920x1080": "1920 × 1080", "1024x768": "1024 × 768" };
+function sbCpRes() {
+  const v = sbPref("cpRes");
+  return SB_CP_RES.some(([k]) => k === v) ? v : "1280x720";
+}
+function sbCpFps() { return Number(sbPref("cpFPS")) === 60 ? 60 : 30; }
+function sbCpCodec() { return sbPref("cpCodec") === "h265" ? "h265" : "h264"; }
+function sbCpAudio() { return sbPref("cpAudio") !== "0"; }
+function sbCpDims() {
+  const [w, h] = sbCpRes().split("x").map(Number);
+  return { width: w, height: h };
+}
+function sbCpConfig() {
+  const d = sbCpDims();
+  return { width: d.width, height: d.height, maxFPS: sbCpFps(), codec: sbCpCodec(), audio: sbCpAudio() ? 1 : 0 };
+}
+function sbCpConfigSend() {
+  const c = sbCpConfig();
+  sbCarPlayMsg({ cmd: "config", width: c.width, height: c.height, maxFPS: c.maxFPS, codec: c.codec, audio: c.audio });
+}
+
 function sbAutoTurn() {
   const s = sbState();
-  if (!s.on || s.pinned) return;
+  if (!s.on || s.pinned || !sbAutoOn()) return;
   // CarPlay 一旦开始连接 / 出画面，这一页就定住：不再自动翻走，避免把车机画面切掉
   if (s.page === 6) {
     const cp = document.querySelector('#sb .sb-p[data-p="6"]');
@@ -1549,11 +1868,13 @@ function sbAutoTurn() {
   }
   const now = Date.now();
   if (now - (s.lastTouch || 0) < SB_AUTO_IDLE) return;
-  if (now - (s.lastTurn || 0) < SB_AUTO_TURN) return;
+  if (now - (s.lastTurn || 0) < sbAutoSec() * 1000) return;
   const pk = $("#sb-peek");
   if (pk && !pk.classList.contains("hidden")) return;
   const due = $("#sb-due");
   if (due && !due.classList.contains("hidden")) return;
+  const set = $("#sb-set");
+  if (set && !set.classList.contains("hidden")) return;
   if (typeof SB_LYR !== "undefined" && SB_LYR.open) return;
   if (typeof SB_MUP !== "undefined" && SB_MUP.open) return;
   s.lastTurn = now;
@@ -1567,35 +1888,49 @@ function sbGo(i, silent, auto) {
   const track = $("#sb-track");
   if (!track) return;
   const idx = Math.max(0, Math.min(SB_PAGES - 1, i));
-  s.page = idx;
-  try { localStorage.setItem("sbPage", String(idx)); } catch (e) {}
-  const w = track.clientWidth || 1;
-  if (track.scrollLeft !== idx * w) {
-    track.scrollTo({ left: idx * w, behavior: silent ? "auto" : "smooth" });
+  // 点圆点 / 自动轮播跨相邻页：原生画面也走同一段曲线滑出去或滑回来，别在落页那一刻闪掉。
+  if (!silent && sbCpCaps.stage && sbCpVideo() && Math.abs(idx - s.page) === 1) {
+    const pw = track.clientWidth || 1;
+    const dur = Math.min(360, 150 + pw / 3);
+    s.cpSettling = true;
+    sbCarPlayMsg({ cmd: "stageGrab", x: 6 * pw - track.scrollLeft });
+    sbCarPlayMsg({ cmd: "stageSettle", x: (6 - idx) * pw, out: idx === 6 ? 0 : 1, dur });
+    setTimeout(() => { s.cpSettling = false; }, dur + 80);
   }
-  sbPaintDots();
-  sbCarPlayPage(idx);
-  if (idx === 1) { sbLoadWx(); sbLoadDash(); sbLoadQuotes(); sbLoadStocks(); }
-  if (idx === 5) sbLoadWork();
+  sbPageSet(idx);
+  // 翻页一律走自己的短动画：浏览器 smooth 一旦被打断（手指落下、写 scrollLeft、
+  // 舞台重排）就会停在两张之间，而 s.page / 圆点已经指向目标页，谁也把它拉不回来。
+  if (silent) sbStopAnim();
+  else sbGlide(idx);
   // 自动轮播不碰 idle / 隐藏态：隐藏的 chrome 只在手动干预时回来
   if (auto) s.autoUntil = Date.now() + 900;
   else { s.autoUntil = 0; sbIdleReset(); }
 }
 
+/* 落页：s.page / 圆点 / 各页懒加载只在这里改，避免三处各写一遍各自漂移 */
+function sbPageSet(idx) {
+  const s = sbState();
+  s.page = idx;
+  try { localStorage.setItem("sbPage", String(idx)); } catch (e) {}
+  sbPaintDots();
+  if (idx === 1) { sbLoadWx(); sbLoadDash(); sbLoadQuotes(); sbLoadStocks(); }
+  if (idx === 5) sbLoadWork();
+  // 落页是唯一真相：手指拖动（sbDragEnd）和点圆点（sbGo）都经过这里，
+  // 车机原生层要跟着收/放，返回键也要跟着换形态，绝不能只挂在 sbGo 上。
+  sbCarPlayPage(idx);
+}
+
 function sbScroll() {
   const s = sbState();
   if (!s.on) return;
+  if (s.animUntil && Date.now() < s.animUntil) return;   // 自己补的落页动画期间不参与判页
   if (s.autoUntil && Date.now() < s.autoUntil) return;
   const track = $("#sb-track");
   if (!track) return;
   const w = track.clientWidth || 1;
   const idx = Math.max(0, Math.min(SB_PAGES - 1, Math.round(track.scrollLeft / w)));
   if (idx !== s.page) {
-    s.page = idx;
-    try { localStorage.setItem("sbPage", String(idx)); } catch (e) {}
-    sbPaintDots();
-    if (idx === 1) { sbLoadWx(); sbLoadDash(); sbLoadQuotes(); sbLoadStocks(); }
-    if (idx === 5) sbLoadWork();
+    sbPageSet(idx);
     sbIdleReset();
   }
 }
@@ -1612,11 +1947,15 @@ function sbDragTheta() {
 function sbDragStart(e) {
   const s = sbState();
   const sheet = $("#sb-cp-sheet");
-  if (!s.on || s.pinned || (sheet && !sheet.classList.contains("hidden")) || e.touches.length !== 1) return;
+  const set = $("#sb-set");
+  if (!s.on || s.pinned || (sheet && !sheet.classList.contains("hidden")) ||
+      (set && !set.classList.contains("hidden")) || e.touches.length !== 1) return;
   const track = $("#sb-track");
   if (!track) return;
   clearTimeout(s.swipeTimer);
   $("#sb").classList.add("sb-swipe");
+  // 手指一落下，右下那两颗心率胶囊跟返回/设置/固定/翻转一起让位；落页后再回来。
+  sbCarPlayMsg({ cmd: "rail", show: 0 });
   const t = e.touches[0];
   s.drag = true;
   s.dragMoved = false;
@@ -1625,6 +1964,14 @@ function sbDragStart(e) {
   s.dragLeft = track.scrollLeft;
   s.dragT = Date.now();
   s.dragV = 0;
+  // 车机画面是原生 UIView，不跟着网页卡片走就会「松手后才猛地消失」。
+  // 这里让它从第一帧起就按网页的横向位移跟手；车机页左右相邻页也一并挂上，
+  // 这样往回滑进车机页时是整张卡滑进来，而不是落页那一刻才出现。
+  s.cpStage = !!sbCpCaps.stage && sbCpVideo() && Math.abs(s.page - 6) <= 1;
+  if (s.cpStage) {
+    const w = track.clientWidth || 1;
+    sbCarPlayMsg({ cmd: "stageGrab", x: 6 * w - track.scrollLeft });
+  }
 }
 
 function sbDragMove(e) {
@@ -1639,6 +1986,7 @@ function sbDragMove(e) {
   // 屏幕位移换回舞台的横轴位移（竖屏时舞台转了 90°，手指上滑就是下一张）
   const along = Math.cos(th) * dx + Math.sin(th) * dy;
   track.scrollLeft = s.dragLeft - along;
+  if (s.cpStage) sbCarPlayMsg({ cmd: "stageMove", x: 6 * (track.clientWidth || 1) - track.scrollLeft });
   const now = Date.now();
   const dt = Math.max(1, now - s.dragT);
   s.dragV = (-along) / dt;         // 舞台横轴上的速度（px/ms）
@@ -1653,7 +2001,17 @@ function sbDragEnd() {
   if (!s.drag) return;
   s.drag = false;
   clearTimeout(s.swipeTimer);
-  if (!track || !s.dragMoved) { $("#sb").classList.remove("sb-swipe"); return; }
+  if (!track || !s.dragMoved) {
+    // 只是点了一下没拖动：原生层若已经 grab 抬起，要原样放回，不能留在屏外悬着。
+    if (s.cpStage) {
+      s.cpStage = false;
+      const pw = (track && track.clientWidth) || 1;
+      sbCarPlayMsg({ cmd: "stageSettle", x: 6 * pw - ((track && track.scrollLeft) || 0), out: s.page === 6 ? 0 : 1, dur: 160 });
+    }
+    $("#sb").classList.remove("sb-swipe");
+    sbHealPage();
+    return;
+  }
   s.swipeTimer = setTimeout(() => $("#sb").classList.remove("sb-swipe"), 420);
   s.dragMoved = false;
   const w = track.clientWidth || 1;
@@ -1665,28 +2023,83 @@ function sbDragEnd() {
     page = moved > 0 || v > 0 ? Math.floor(s.dragLeft / w) + 1 : Math.ceil(s.dragLeft / w) - 1;
   }
   page = Math.max(0, Math.min(SB_PAGES - 1, page));
-  s.page = page;
+  // 松手：原生画面沿着手指方向补完剩下的距离（和 sbGlide 同一条曲线、同一时长），
+  // 滑出屏幕后才收起，所以不会再出现「页面滑完了画面才闪掉」。
+  if (s.cpStage) {
+    s.cpStage = false;
+    s.cpSettling = true;
+    const dist = Math.abs((6 - page) * w - (6 * w - track.scrollLeft));
+    const dur = Math.min(360, 150 + dist / 3);
+    sbCarPlayMsg({ cmd: "stageSettle", x: (6 - page) * w, out: page === 6 ? 0 : 1, dur });
+    setTimeout(() => { s.cpSettling = false; }, dur + 80);
+  }
+  sbPageSet(page);
   s.scrollingAt = Date.now();
   sbGlide(page);
 }
 
-/* 松手后的落页：自己补一段短动画，取代 smooth scrollTo（后者在旋转舞台里经常一顿一顿 */
+/* 松手后的落页：自己补一段短动画，取代 smooth scrollTo（后者在旋转舞台里经常一顿一顿，
+   而且一旦被打断就停在两张之间，没有任何人负责把它拉回去） */
 function sbGlide(page) {
+  const s = sbState();
   const track = $("#sb-track");
   if (!track) return;
   const w = track.clientWidth || 1;
   const from = track.scrollLeft, to = page * w;
-  if (Math.abs(to - from) < 1) { sbGo(page, true); return; }
+  const id = s.anim = (s.anim || 0) + 1;
+  if (Math.abs(to - from) < 1) { track.scrollLeft = to; s.animUntil = 0; return; }
   const t0 = performance.now();
   const dur = Math.min(360, 150 + Math.abs(to - from) / 3);
   const ease = (u) => 1 - Math.pow(1 - u, 3);
+  s.animUntil = Date.now() + dur + 40;
   const step = (now) => {
+    if (s.anim !== id) return;                       // 已经被新的翻页接管
     const u = Math.min(1, (now - t0) / dur);
-    track.scrollLeft = from + (to - from) * ease(u);
+    track.scrollLeft = u >= 1 ? to : from + (to - from) * ease(u);
     if (u < 1) requestAnimationFrame(step);
-    else sbGo(page, true);
+    else { track.scrollLeft = to; s.animUntil = 0; }  // 收尾一定落在整页上
   };
   requestAnimationFrame(step);
+}
+
+/* 立刻停在 s.page 上：布局重算 / 自愈用，不带动画 */
+function sbStopAnim() {
+  const s = sbState();
+  s.anim = 0; s.animUntil = 0;
+  const track = $("#sb-track");
+  if (track) track.scrollLeft = s.page * (track.clientWidth || 1);
+}
+
+/* 自愈之一：页码 / 圆点已经指向某页、轨道却停在两张之间（翻页动画被打断的样子），
+   一拍归位。修复路径不再补动画——动画本身没跑完就是这次故障的成因。 */
+function sbHealPage() {
+  const s = sbState();
+  if (!s.on || s.drag || document.hidden) return;
+  if (s.animUntil && Date.now() < s.animUntil) return;
+  const track = $("#sb-track");
+  if (!track) return;
+  const w = track.clientWidth || 1;
+  if (Math.abs(track.scrollLeft - s.page * w) <= 2) return;
+  s.anim = 0; s.animUntil = 0;
+  track.scrollLeft = s.page * w;
+}
+
+/* 自愈之二：舞台宽高与 --sb-u 是进待机时按 innerWidth/innerHeight 一次拍定的，
+   若那一刻量到转屏的中间值、之后又没有 resize 事件，整个界面就一直是歪的。
+   视口已经稳定（innerWidth 与盒子一致）而舞台尺寸对不上，就重排。 */
+function sbHealStage() {
+  const s = sbState();
+  if (!s.on || s.drag) return;
+  const box = $("#sb");
+  if (!box) return;
+  const stage = box.querySelector(".sb-stage");
+  if (!stage) return;
+  const r = box.getBoundingClientRect();
+  const vw = window.innerWidth || 393, vh = window.innerHeight || 852;
+  if (Math.abs(vw - r.width) > 2 || Math.abs(vh - r.height) > 2) return;
+  const wantW = s.land ? vw : vh, wantH = s.land ? vh : vw;
+  const gotW = parseFloat(stage.style.width) || 0, gotH = parseFloat(stage.style.height) || 0;
+  if (Math.abs(gotW - wantW) > 2 || Math.abs(gotH - wantH) > 2) sbLayout();
 }
 
 function sbPaintDots() {
@@ -1718,7 +2131,7 @@ function sbTap(e) {
   if (!s.on) return;
   if (e && e.target && e.target.closest && e.target.closest("button")) return;
   // 可跳转的数据块自己处理点击，别顺手把圆点/翻转隐掉
-  if (e && e.target && e.target.closest && (e.target.closest("#sb-peek") || e.target.closest("#sb-due") || e.target.closest("#sb-cp-sheet"))) return;
+  if (e && e.target && e.target.closest && (e.target.closest("#sb-peek") || e.target.closest("#sb-due") || e.target.closest("#sb-cp-sheet") || e.target.closest("#sb-set"))) return;
   sbIdleReset();
 }
 
@@ -1803,6 +2216,131 @@ function sbPeekClose(after) {
   if (!box) return;
   box.classList.remove("on");
   setTimeout(() => { box.classList.add("hidden"); if (after) after(); }, 150);
+}
+
+/* ---------- CarPlay 设置：左侧 X 下方那颗 ----------
+   整屏复用 .sheet-body / .sheet-head；只调这个 CarPlay 宿主真正吃得到的参数：
+   分辨率 / 帧率 / 编码 / 音频 / 自动续连。不再塞常亮、外观、轮播这些和车机无关的项。 */
+function sbSetSwitch(key, label, on) {
+  return `<div class="sb-set-row"><span>${label}</span>`
+    + `<button type="button" class="sb-set-sw${on ? " on" : ""}" role="switch" aria-checked="${on ? "true" : "false"}" data-sb-sw="${key}" aria-label="${label}"><i></i></button></div>`;
+}
+function sbSetSeg(items, cur, attr) {
+  return `<div class="sb-set-seg">${items.map(([v, t]) =>
+    `<button type="button" data-${attr}="${v}" class="${String(cur) === String(v) ? "on" : ""}">${t}</button>`).join("")}</div>`;
+}
+function sbSetHtml() {
+  const res = sbCpRes(), fps = sbCpFps(), codec = sbCpCodec();
+  const perfHint = res === "1920x1080" && fps === 60
+    ? "1080p + 60 帧负载最高；卡顿时先切回 720p / 30 帧"
+    : res === "1920x1080"
+      ? "1080p 更清晰；卡顿时优先切回 720p"
+      : "30 帧更稳，60 帧更顺";
+  return `<div class="sb-set-grid">
+    <section class="sb-set-card">
+      <div class="sb-set-eyebrow">画面与连接</div>
+      <div class="sb-set-row"><span>分辨率</span>${sbSetSeg(SB_CP_RES, res, "sb-cpres")}</div>
+      <div class="sb-set-hint" id="sb-set-res-hint">${SB_CP_INFO[res]} · ${res === "1024x768" ? "4:3" : "16:9"}</div>
+      <div class="sb-set-row"><span>帧率</span>${sbSetSeg([[30, "30"], [60, "60"]], fps, "sb-cpfps")}</div>
+      <div class="sb-set-hint">${perfHint}</div>
+      ${sbSetSwitch("cp", "自动续连", sbCpAutoOn())}
+      <div class="sb-set-hint">切后台回来不用再长按 Hello</div>
+    </section>
+    <section class="sb-set-card">
+      <div class="sb-set-eyebrow">编码与输出</div>
+      <div class="sb-set-row"><span>编码</span>${sbSetSeg([["h264", "H.264"], ["h265", "H.265"]], codec, "sb-cpcodec")}</div>
+      <div class="sb-set-hint">H.265 更省带宽；车机不兼容时切回 H.264</div>
+      ${sbSetSwitch("cpAudio", "外放音响", sbCpAudio())}
+      <div class="sb-set-hint">优先使用已连接的蓝牙耳机 / 车机 / 音响；没有蓝牙时用本机扬声器</div>
+      <button type="button" class="sb-set-apply" id="sb-set-apply">重连并应用</button>
+      <div class="sb-set-foot">重连后生效，不影响已保存的 Wi-Fi</div>
+    </section>
+  </div>`;
+}
+function sbSetPaint() {
+  const s = sbState();
+  if (!s.on) return;
+  const scroll = $("#sb-set-scroll");
+  if (!scroll) return;
+  const top = scroll.scrollTop;
+  scroll.innerHTML = sbSetHtml();
+  scroll.scrollTop = top;
+
+  scroll.querySelectorAll("[data-sb-sw]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const k = b.dataset.sbSw;
+      if (k === "cpAudio") {
+        sbPrefSet("cpAudio", sbCpAudio() ? "0" : "1");
+        sbCpConfigSend();
+      } else if (k === "cp") {
+        sbPrefSet("sbCpAuto", sbCpAutoOn() ? "0" : "1");
+      }
+      sbSetPaint();
+    };
+  });
+  scroll.querySelectorAll("[data-sb-cpres]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      sbPrefSet("cpRes", b.dataset.sbCpres);
+      sbCpConfigSend();
+      sbSetPaint();
+    };
+  });
+  scroll.querySelectorAll("[data-sb-cpfps]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      sbPrefSet("cpFPS", b.dataset.sbCpfps);
+      sbCpConfigSend();
+      sbSetPaint();
+    };
+  });
+  scroll.querySelectorAll("[data-sb-cpcodec]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      sbPrefSet("cpCodec", b.dataset.sbCpcodec);
+      sbCpConfigSend();
+      sbSetPaint();
+    };
+  });
+  const apply = $("#sb-set-apply");
+  if (apply) apply.onclick = (e) => {
+    e.stopPropagation();
+    sbCpConfigSend();
+    sbSetClose(true);
+    // 车机不能在会话中途改分辨率/编码，必须让壳用新配置重新握手一次
+    sbCarPlayMsg({ cmd: "restart" });
+    toast("正在用新画面参数重连 CarPlay");
+  };
+}
+function sbSetOpen() {
+  const s = sbState();
+  if (!s.on) return;
+  const box = $("#sb-set");
+  if (!box) return;
+  sbSetPaint();
+  sbCpConfigSend();
+  box.classList.remove("hidden");
+  box.setAttribute("aria-hidden", "false");
+  const root = $("#sb");
+  if (root) root.classList.add("sb-set-open");
+  requestAnimationFrame(() => { if (box && !box.classList.contains("hidden")) box.classList.add("on"); });
+  // 原生 CarPlay 画面是 UIView，盖在 WKWebView 之上；设置要看得见，必须先请壳把画面收起来。
+  if (sbCpVideo()) sbCarPlayMsg({ cmd: "overlay", covered: 1 });
+  sbIdleReset();
+}
+function sbSetClose(instant) {
+  const box = $("#sb-set");
+  if (!box || box.classList.contains("hidden")) return;
+  box.classList.remove("on");
+  box.setAttribute("aria-hidden", "true");
+  const root = $("#sb");
+  if (root) root.classList.remove("sb-set-open");
+  // 关掉设置再把车机画面放回来，连接本身不中断；人不在车机页时先不放，等翻回去再放。
+  if (sbCpVideo() && sbState().page === 6) sbCarPlayMsg({ cmd: "overlay", covered: 0 });
+  if (instant) { box.classList.add("hidden"); return; }
+  setTimeout(() => { if (box && !box.classList.contains("on")) box.classList.add("hidden"); }, 160);
+  sbIdleReset();
 }
 
 /* ---------- 待处理：到点时待机自己上滑，不退出待机 ----------
@@ -2050,6 +2588,17 @@ function sbTick() {
     sbPaintTexts(n);
   }
   sbPaintTime(n);
+  // 原生视频层已经盖住整页：只保留时钟、心率卡和低频心率数据，
+  // 不再每帧重排被遮住的音乐 / 歌词 / 健康 / 专注 DOM。
+  if (sbCarPlayVideoOn()) {
+    sbCpHeartPaint();
+    if (Date.now() - (s.hrAt || 0) > 25e3) sbLoadHr();
+    return;
+  }
+  // 自愈：翻页被打断停在两张之间、或进待机时量到转屏中间尺寸，都靠这两条兜住。
+  // 只在非视频态做：视频态被原生层盖住，重排没有收益，还会跟视频抢主线程。
+  sbHealPage();
+  sbHealStage();
   // 正在滑动或刚松手的那半秒先只走时钟：卡片背面没有模糊了，但重排 DOM 仍会吃掉滑动的帧
   if (Date.now() - (s.scrollingAt || 0) > 500) {
     sbPaintHr();
@@ -2164,19 +2713,39 @@ function sbLunar(day) {
 }
 
 function sbDateLine(n) {
-  const l = sbLunar(n.day);
+  const on = (typeof wkLunarOn === "function") ? wkLunarOn() : true;
+  const l = on ? sbLunar(n.day) : "";
   return `${n.md} 周${n.week}${l ? ` · 农历 ${l}` : ""}`;
 }
 
 function sbPaintTexts(n) {
   $("#sb-cal-md").textContent = n.md;
   $("#sb-cal-wk").textContent = `周${n.week}`;
-  const l = sbLunar(n.day);
+  const lunarOn = (typeof wkLunarOn === "function") ? wkLunarOn() : true;
+  const l = lunarOn ? sbLunar(n.day) : "";
   $("#sb-cal-lunar").textContent = l ? `农历 ${l}` : "";
   $("#sb-cal-lunar").style.display = l ? "" : "none";
   $("#sb-c-date").textContent = sbDateLine(n);
   $("#sb-d-date").textContent = sbDateLine(n);
   $("#sb-ag-h").textContent = "今天";
+  requestAnimationFrame(sbFitCols);
+}
+
+/* 手机端两处对齐：月历页左侧两块宽度跟随日期；双栏页日期胶囊与底注跟随时钟居中对齐 */
+function sbFitCols() {
+  if (document.documentElement.classList.contains("wk-hd")) return;
+  const calL = document.querySelector("#sb .sb-cal-l");
+  const md = document.getElementById("sb-cal-md");
+  if (calL && md) {
+    const w = Math.round(md.getBoundingClientRect().width);
+    if (w > 0) calL.style.setProperty("--sb-cal-w", w + "px");
+  }
+  const duoL = document.querySelector("#sb .sb-duo-l");
+  const clk = document.querySelector("#sb .sb-big-sm");
+  if (duoL && clk) {
+    const w = Math.round(clk.getBoundingClientRect().width);
+    if (w > 0) duoL.style.setProperty("--sb-clk-w", w + "px");
+  }
 }
 
 function sbPaintTime(n) {
@@ -2184,6 +2753,7 @@ function sbPaintTime(n) {
   $("#sb-hm").textContent = hm;
   $("#sb-hm2").textContent = hm;
   $("#sb-sec").textContent = sbPad(n.ss);
+  requestAnimationFrame(sbFitCols);
 }
 
 function sbPaintAnalog(n) {
@@ -2206,6 +2776,7 @@ function sbIsTrading(day) {
   return dow >= 1 && dow <= 5;
 }
 
+let sbCalLoading = false;
 function sbPaintCal(n) {
   const grid = $("#sb-grid");
   if (!grid) return;
@@ -2214,22 +2785,79 @@ function sbPaintCal(n) {
   const lead = (first.getUTCDay() + 6) % 7;
   const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
   const today = n.d;
+  const richCal = true;                 // 手机端也显示农历与休/班
+  const richHd = !!(window.wkHD);       // 只有 iPad 富月历才带时长/假期名等重字段
+  const mh = $("#sb-cal-month");
+  if (mh) {
+    const my = $("#sb-cal-year");
+    mh.textContent = `${m}月`;
+    if (my) my.textContent = String(y);
+    mh.parentNode.style.display = (richCal && richHd) ? "flex" : "none";
+  }
+
+  /* 农历/节假日与工作页共用一份 JSON；待机打开时补拉一次（仅 iPad 富月历） */
+  if (!sbCalLoading && typeof wkCalData === "function" && typeof wkLoadCalData === "function") {
+    try {
+      const cd = wkCalData();
+      if (!cd.lunar && !cd.failed) {
+        sbCalLoading = true;
+        wkLoadCalData().then(() => {
+          sbCalLoading = false;
+          try { sbPaintCal(sbNow()); } catch (e) {}
+        }).catch(() => { sbCalLoading = false; });
+      }
+    } catch (e) {}
+  }
+
   let cells = "";
   for (let i = 0; i < lead; i++) cells += `<span class="sb-gc blank"></span>`;
   for (let d = 1; d <= days; d++) {
     const day = `${y}-${sbPad(m)}-${sbPad(d)}`;
+    const info = (typeof sbShiftInfo === "function") ? sbShiftInfo(day) : null;
+    const t = info && info.type;
     const hol = (function () { try { return (typeof wkHolidayOf === "function" && wkHolidayOf(day)) || null; } catch (e) { return null; } })();
-    const off = !!(hol && hol.off);
+    const lunar = (function () { try { return (typeof wkLunarText === "function" && wkLunarText(day)) || ""; } catch (e) { return ""; } })();
+    const off = !!(hol && hol.off) || !!(t && t.kind === "off") || !!(info && info.rest);
     const wk = !!(hol && hol.work);
-    const cls = ["sb-gc"];
-    if (d === today) cls.push("today");
+    const top = hol && hol.off && hol.name ? hol.name : lunar;
+    const shift = t ? (t.short || (t.kind === "off" ? "休" : "班")) : (info && info.rest ? "休" : "");
+    const dur = t && t.kind === "long" && typeof wkDurText === "function" ? wkDurText(t.dur_min) : "";
+    let foot = "";
+    if (hol && hol.work) foot = "班";
+    else if (hol && hol.name && hol.name !== top) foot = hol.name;
+    if (!richCal) {
+      const cls = ["sb-gc"];
+      if (d === today) cls.push("today");
+      if (off) cls.push("off");
+      if (wk) cls.push("wk");
+      cells += `<span class="${cls.join(" ")}">${d}</span>`;
+      continue;
+    }
+    const cls = ["sb-gc", "rich"];
+    if (d === today) cls.push("is-today");
     if (off) cls.push("off");
     if (wk) cls.push("wk");
-    cells += `<span class="${cls.join(" ")}">${d}</span>`;
+    if (!richHd) {
+      const badge = (hol && hol.work) ? "班" : ((hol && hol.off) ? "休" : "");
+      cells += `<div class="${cls.join(" ")}">
+        <span class="sb-gc-d">${d}</span>
+        ${lunar ? `<em class="sb-gc-l">${esc(lunar)}</em>` : ""}
+        ${badge ? `<b class="sb-gc-s">${esc(badge)}</b>` : ""}
+      </div>`;
+      continue;
+    }
+    cells += `<div class="${cls.join(" ")}">
+        <span class="sb-gc-d">${d}</span>
+        ${top ? `<em class="sb-gc-l">${esc(top)}</em>` : ""}
+        ${shift ? `<b class="sb-gc-s">${esc(shift)}${t && t.cross_day ? " →" : ""}</b>` : ""}
+        ${dur ? `<em class="sb-gc-dur">${esc(dur)}</em>` : ""}
+        ${foot ? `<em class="sb-gc-h">${esc(foot)}</em>` : ""}
+      </div>`;
   }
   const tail = (7 - ((lead + days) % 7)) % 7;
   for (let i = 0; i < tail; i++) cells += `<span class="sb-gc blank"></span>`;
   grid.innerHTML = cells;
+
   let left = 0;
   for (let d = today; d <= days; d++) {
     if (sbIsTrading(`${y}-${sbPad(m)}-${sbPad(d)}`)) left++;
@@ -2237,7 +2865,6 @@ function sbPaintCal(n) {
   const box = $("#sb-cal-tr");
   if (box) box.textContent = left ? `本月还有 ${left} 个交易日` : "本月交易日已走完";
 }
-
 function sbNum(v) { return v === null || v === undefined || v === "" || Number.isNaN(Number(v)) ? null : Number(v); }
 
 /* ---------- 第 1 页：今日 · 行情 ---------- */
@@ -2437,23 +3064,52 @@ function sbHrPathV(arr, w, h, px, py) {
 }
 
 let sbCplIx = 0;
+let sbCplGuideUntil = 0;
+let sbCplGuideArmed = false;
+let sbCplGuideTimer = 0;
 function sbCpCarouselPaint() {
   const card = $("#sb-cp-hr");
   if (!card) return;
   const pages = card.querySelectorAll(".sb-cpl-page");
   const dots = card.querySelectorAll(".sb-cpl-dots i");
+  const guiding = Date.now() < sbCplGuideUntil;
+  card.classList.toggle("guiding", guiding);
+  if (guiding) {
+    pages.forEach((p) => p.classList.remove("on"));
+    dots.forEach((d) => d.classList.remove("on"));
+    return;
+  }
   pages.forEach((p, i) => p.classList.toggle("on", i === sbCplIx));
   dots.forEach((d, i) => d.classList.toggle("on", i === sbCplIx));
 }
 function sbCpCarouselTick() {
   const card = $("#sb-cp-hr");
   if (!card || card.hidden) return;
+  if (Date.now() < sbCplGuideUntil) return;
+  if (card.classList.contains("guiding")) {
+    sbCplGuideUntil = 0;
+    sbCplIx = 0;
+    sbCpCarouselPaint();
+    return;
+  }
   const page = document.querySelector('#sb .sb-p[data-p="6"]');
   if (!page || page.dataset.cp !== "video") return;
   sbCplIx = (sbCplIx + 1) % 4;
   sbCpCarouselPaint();
 }
 setInterval(sbCpCarouselTick, 5200);
+
+function sbCpFitRange() {
+  const b = $("#sb-cpl-v-range");
+  if (!b) return;
+  const max = 12.5, min = 9.5;
+  let size = max;
+  b.style.fontSize = size + "px";
+  for (let i = 0; i < 8 && b.scrollWidth > b.clientWidth && size > min; i++) {
+    size -= 0.5;
+    b.style.fontSize = size + "px";
+  }
+}
 
 function sbCpHeartPaint() {
   const card = $("#sb-cp-hr");
@@ -2478,6 +3134,19 @@ function sbCpHeartPaint() {
   if (card.hidden) sbCplIx = 0;
   card.style.width = Math.round(band) + "px";
   card.hidden = false;
+  if (sbCplGuideArmed) {
+    sbCplGuideArmed = false;
+    sbCplGuideUntil = now + 5000;
+    clearTimeout(sbCplGuideTimer);
+    sbCplGuideTimer = setTimeout(() => {
+      sbCplGuideUntil = 0;
+      const hr = $("#sb-cp-hr");
+      if (hr) hr.classList.remove("guiding");
+      sbCplIx = 0;
+      sbCpCarouselPaint();
+    }, 5000);
+  }
+  if (now >= sbCplGuideUntil) card.classList.remove("guiding");
 
   const bpm = Math.round(last.v);
   const idx = sbHrZoneIdx(bpm);
@@ -2512,6 +3181,7 @@ function sbCpHeartPaint() {
   const peak = $("#sb-cpl-v-peak"), avg = $("#sb-cpl-v-avg");
   if (peak) peak.textContent = all.length ? String(Math.round(Math.max(...all.map((x) => x.v)))) : "—";
   if (avg) avg.textContent = all.length ? String(Math.round(all.reduce((a, x) => a + x.v, 0) / all.length)) : "—";
+  requestAnimationFrame(sbCpFitRange);
   sbCpCarouselPaint();
 }
 window.addEventListener("resize", () => { if (typeof sbCpHeartPaint === "function") sbCpHeartPaint(); });
@@ -2708,6 +3378,7 @@ function sbPaintHealth() {
 }
 
 /* 给壳/外部一个稳定入口，命名沿用 sb 前缀 */
+window.sbBattery = sbBattery;
 window.sbHrSample = sbHrSample;
 window.sbHealthSnapshot = sbHealthSnapshot;
 window.sbHealthState = sbHealthState;
@@ -2791,6 +3462,9 @@ function sbMuPaint() {
   }
   // 壳没拿到 artwork（云端曲目经常是 nil）就自己按歌名+艺人抓一张，抓不到也隔 20 秒再试
   if (!url && m.title && typeof muFetchCover === "function") muFetchCover(m);
+  // 分栏封面等这张图：地址一到就重新采点
+  if (typeof SB_CV !== "undefined" && SB_CV.on && SB_LYR.open && url && url !== SB_CV.url) sbCvSync();
+  if (typeof sbAmbSync === "function" && url !== SB_AMB.url) sbAmbSync(url);
 
   // 记录「最近在听」，播放列表就是它
   if (key && m.title) {
@@ -2816,33 +3490,237 @@ function sbMuPaint() {
 }
 
 /* ---------- 整屏歌词：复用待机展开层的壳（.sheet-body / .sheet-head） ---------- */
+/* 播放进度：壳每秒推一次 elapsed，两次推送之间用 muClockNow() 在本机连续外推，
+   换句落在时间轴上的那一帧，而不是「下一次整秒才换」。 */
+function sbLyrClock() {
+  if (typeof muClockNow === "function") return muClockNow();
+  const m = (typeof muState === "function" ? muState() : {}) || {};
+  return Number(m.elapsed) || 0;
+}
+
+/* 当前句落点：视线上方一点，上面留一句、下面露一句（和手册的 44% 一致） */
+function sbLyrAnchor(list, p) {
+  if (!list || !p) return 0;
+  const focus = list.clientHeight * 0.44;
+  const max = Math.max(0, list.scrollHeight - list.clientHeight);
+  return Math.max(0, Math.min(max, p.offsetTop - focus + p.offsetHeight / 2));
+}
+
+/* 每帧：换句只改类和目标，滚动按真实帧时长跟过去，
+   没有「停三秒、动半秒」的顿挫，整列一直在走。 */
+function sbLyrFrame(ts) {
+  if (!SB_LYR.open) { SB_LYR.raf = 0; return; }
+  const list = $("#sb-mlyr-list");
+  if (!list) { SB_LYR.raf = 0; return; }
+  SB_LYR.raf = requestAnimationFrame(sbLyrFrame);
+  const entries = (state.lyric && state.lyric.entries) || [];
+  if (!entries.length || !SB_LYR.rendered) return;
+
+  const t = sbLyrClock();
+  let idx = -1;
+  for (let i = 0; i < entries.length; i++) { if (entries[i].t <= t + 0.02) idx = i; else break; }
+  const ps = list.children;
+  if (idx !== SB_LYR.idx) {
+    SB_LYR.idx = idx;
+
+    for (let i = 0; i < ps.length; i++) {
+      if (!ps[i].dataset || ps[i].dataset.t == null) continue;
+      ps[i].classList.toggle("on", i === idx);
+      ps[i].classList.toggle("past", idx >= 0 && i < idx);
+    }
+  }
+
+  const target = (idx >= 0 && ps[idx] && ps[idx].dataset.t != null) ? sbLyrAnchor(list, ps[idx]) : 0;
+  const dt = Math.min(0.05, Math.max(0.004, (ts - (SB_LYR.lastAt || ts)) / 1000));
+  SB_LYR.lastAt = ts;
+
+  if (performance.now() < SB_LYR.holdUntil) {
+    // 手指刚在这块上滑过：先把位置跟回手指，松手几秒后再接管
+    SB_LYR.y = list.scrollTop;
+    return;
+  }
+  // 按真实帧时长做指数跟手（τ≈0.12s，约 0.36s 落位）：起步就走、末尾轻放，
+  // 和帧率无关，卡一帧也不会把整段动画拖成慢动作。
+  const rest = target - SB_LYR.y;
+  // 手动翻出去好几行再回来时直接归位：飞越几百像素的「快速滚动」反而难看
+  if (Math.abs(rest) > (SB_LYR.pitch || 40) * 3) SB_LYR.y = target;
+  else SB_LYR.y += Math.abs(rest) < 0.35 ? rest : rest * (1 - Math.exp(-dt / 0.12));
+  list.scrollTop = SB_LYR.y;
+  SB_LYR.y = list.scrollTop;                       // Safari 会把 scrollTop 取整，读回来免得越积越偏
+}
+
+/* 首屏 / 换歌：直接落位，不从顶上滚下来 */
+function sbLyrSeed() {
+  const list = $("#sb-mlyr-list");
+  if (!list) return;
+  const entries = (state.lyric && state.lyric.entries) || [];
+  const ps = list.children;
+  if (!entries.length || !ps.length) return;
+  const t = sbLyrClock();
+  let idx = -1;
+  for (let i = 0; i < entries.length; i++) { if (entries[i].t <= t + 0.02) idx = i; else break; }
+  SB_LYR.idx = idx;
+  for (let i = 0; i < ps.length; i++) {
+    if (!ps[i].dataset || ps[i].dataset.t == null) continue;
+    ps[i].classList.toggle("on", i === idx);
+    ps[i].classList.toggle("past", idx >= 0 && i < idx);
+  }
+  SB_LYR.y = (idx >= 0 && ps[idx]) ? sbLyrAnchor(list, ps[idx]) : 0;
+  // 一句一行的高度：手动翻远之后归位用它对量「是不是翻出去太多」。
+  const a = ps[0], b2 = ps[1];
+  SB_LYR.pitch = (a && b2 && b2.offsetTop > a.offsetTop) ? b2.offsetTop - a.offsetTop : 40;
+  SB_LYR.lastAt = 0; SB_LYR.holdUntil = 0;
+  list.scrollTop = SB_LYR.y;
+}
+/* ---------- 整屏歌词：封面分栏（照着苹果音乐的做法：模糊底色 + 清晰封面） ----------
+   底色是同一张封面放大到溢出、重度高斯模糊，26 秒缓慢推拉；
+   封面本身清晰，只有很轻的呼吸和按住时的倾斜，不再做粒子。 */
+var SB_CV = { on: false, url: "", src: "" };
+
+function sbCvEnabled() {
+  try { return localStorage.getItem("sbLyrSplit") === "1"; } catch (e) { return false; }
+}
+
+function sbCvApply(on, silent) {
+  const el = $("#sb-mlyr");
+  if (!el) return;
+  SB_CV.on = !!on;
+  el.classList.toggle("split", SB_CV.on);
+  const btn = $("#sb-mlyr-side");
+  if (btn) btn.setAttribute("aria-pressed", SB_CV.on ? "true" : "false");
+  if (!silent) { try { localStorage.setItem("sbLyrSplit", SB_CV.on ? "1" : "0"); } catch (e) {} }
+  if (SB_CV.on) { if (SB_LYR.open) sbCvMount(); }
+  // 列宽变了，行高和换行都跟着变：把当前句重新落位
+  if (SB_LYR.open) setTimeout(() => { SB_LYR.idx = -2; SB_LYR.holdUntil = 0; sbLyrSeed(); }, 340);
+}
+
+function sbCvMount() {
+  if (!SB_CV.on || !SB_LYR.open) return;
+  sbCvSync();
+}
+
+/* 封面地址先问 state，没有就顺手催一次接口；拿到就同时喂给卡片和底色 */
+function sbCvSync(force) {
+  const m = (typeof muState === "function" ? muState() : {}) || {};
+  const a = state.musicArt;
+  const key = (typeof muKey === "function" ? muKey(m) : "");
+  const url = a && a.url && a.key === key ? a.url : "";
+  if (!url) {
+    if (m.title && typeof muFetchCover === "function") muFetchCover(m);
+    if (SB_CV.url) { SB_CV.url = ""; SB_CV.src = ""; const l = $("#sb-mlyr"); if (l) l.classList.remove("has-art"); }
+    return;
+  }
+  if (!force && url && url === SB_CV.url) return;
+  // 图床带防盗链、也没有 CORS 头：统一走同源代理，顺带吃到本地缓存
+  const src = !url ? ""
+    : (/^http/i.test(url) && url.indexOf(location.origin) !== 0)
+      ? API + "/cover_img?url=" + encodeURIComponent(url) : url;
+  if (!src) return;
+  SB_CV.url = url; SB_CV.src = src;
+  const lyr = $("#sb-mlyr"), art = $("#sb-mlyr-art");
+  if (lyr) lyr.classList.remove("has-art");
+  for (const el of [art]) {
+    if (!el) continue;
+    el.onload = () => { if (SB_CV.src === el.getAttribute("src") || el.src === src) { const l = $("#sb-mlyr"); if (l) l.classList.add("has-art"); } };
+    el.onerror = () => { const l = $("#sb-mlyr"); if (l) l.classList.remove("has-art"); };
+    el.src = src;
+  }
+}
+
+/* ---------- 待机全局氛围：正在播的封面重模糊铺一层，当作所有页面的底色 ----------
+   取色再画渐变会露出球形的边，不如直接把封面糊掉：颜色天然是这张唱片的，也没有形状。
+   图仍然走同源代理；没有封面就整层关掉，回原来的纯底。 */
+var SB_AMB = { url: "", on: false };
+
+function sbAmbSync(url) {
+  const u = url || "";
+  const el = $("#sb"), img = $("#sb-amb-img");
+  if (u === SB_AMB.url) return;
+  SB_AMB.url = u;
+  if (!u || !img) {
+    SB_AMB.on = false;
+    if (el) { el.classList.remove("sb-amb-on"); el.style.removeProperty("--sb-amb-img"); }
+    return;
+  }
+  const src = (/^http/i.test(u) && u.indexOf(location.origin) !== 0)
+    ? API + "/cover_img?url=" + encodeURIComponent(u) : u;
+  img.onload = () => {
+    if (SB_AMB.url !== u) return;
+    SB_AMB.on = true;
+    const box = $("#sb");
+    if (box) {
+      box.classList.add("sb-amb-on");
+      // 把同一张封面交给 CSS：整屏弹层（设置/持仓/待处理/音乐列表）用它铺一层同款氛围
+      box.style.setProperty("--sb-amb-img", 'url("' + new URL(src, location.href).href + '")');
+    }
+  };
+  img.onerror = () => {
+    SB_AMB.on = false;
+    const box = $("#sb");
+    if (box) { box.classList.remove("sb-amb-on"); box.style.removeProperty("--sb-amb-img"); }
+  };
+  img.src = src;
+}
+
+/* 手指压在封面上：卡片朝触点方向很轻地倾一下（≤3°），抬手回弹 */
+function sbCvTilt(e, fast) {
+  const card = $("#sb-mlyr-card"), art = $("#sb-mlyr-art");
+  if (!card || !art) return;
+  if (!e) {
+    card.classList.remove("sb-tilt-fast");
+    card.style.setProperty("--rx", "0deg");
+    card.style.setProperty("--ry", "0deg");
+    return;
+  }
+  if (fast) card.classList.add("sb-tilt-fast");
+  const r = art.getBoundingClientRect();
+  const nx = ((e.clientX - r.left) / (r.width || 1) - 0.5) * 2;
+  const ny = ((e.clientY - r.top) / (r.height || 1) - 0.5) * 2;
+  card.style.setProperty("--rx", (-ny * 2.4).toFixed(2) + "deg");
+  card.style.setProperty("--ry", (nx * 3.2).toFixed(2) + "deg");
+}
+
 if (document.readyState === "complete") setTimeout(sbAutoRestore, 0);
 else window.addEventListener("load", () => setTimeout(sbAutoRestore, 0));
 
-var SB_LYR = { open: false, key: "", idx: -1, rendered: false };
+var SB_LYR = { open: false, key: "", idx: -2, rendered: false, raf: 0,
+               y: 0, pitch: 40, holdUntil: 0, lastAt: 0 };
 
 function sbLyrOpen() {
   const m = (typeof muState === "function" ? muState() : {}) || {};
   if (!m.title) return;
   const el = $("#sb-mlyr");
   if (!el || SB_LYR.open) return;
-  SB_LYR.open = true; SB_LYR.key = ""; SB_LYR.idx = -1; SB_LYR.rendered = false;
+  SB_LYR.open = true; SB_LYR.key = ""; SB_LYR.idx = -2; SB_LYR.rendered = false;
+  SB_LYR.y = 0; SB_LYR.lastAt = 0; SB_LYR.holdUntil = 0;
   const t = $("#sb-mlyr-t");
   if (t) t.textContent = m.title;
   el.classList.remove("hidden");
+  // 歌词层是透明的（底交给氛围层），下面的页面和顶部 chrome 先让开，不然标题会透出来
+  const root = $("#sb");
+  if (root) root.classList.add("sb-lyr-on");
   // 必须先把层显示出来再算滚动：隐藏时 clientHeight 是 0，居中会算成「贴顶」
   requestAnimationFrame(() => {
     el.classList.add("on");
-    requestAnimationFrame(() => sbLyrPaint(true));
+    requestAnimationFrame(() => {
+      sbLyrPaint(true);
+      // 上次开着分栏就直接恢复，不用每次手动再点一下
+      if (sbCvEnabled()) sbCvApply(true, true);
+    });
   });
 }
 
 function sbLyrClose(silent) {
   const el = $("#sb-mlyr");
   if (!el) return;
+  if (SB_LYR.raf) { cancelAnimationFrame(SB_LYR.raf); SB_LYR.raf = 0; }
+  const lyrEl = $("#sb-mlyr");
+  if (lyrEl) lyrEl.classList.remove("has-art");
   SB_LYR.open = false;
   el.classList.remove("on");
-  SB_LYR.idx = -1; SB_LYR.key = ""; SB_LYR.rendered = false;
+  const root = $("#sb");
+  if (root) root.classList.remove("sb-lyr-on");
+  SB_LYR.idx = -2; SB_LYR.key = ""; SB_LYR.rendered = false;
   if (silent) el.classList.add("hidden");
   else setTimeout(() => { if (!SB_LYR.open) el.classList.add("hidden"); }, 180);
 }
@@ -2867,55 +3745,17 @@ function sbLyrPaint(force) {
       return;
     }
     SB_LYR.rendered = true;
-    SB_LYR.first = true;
-    // 每行两层：底下一层是没唱到的暗字，上面一层白字用 clip-path 从左往右揭开
-    list.innerHTML = ly.entries.slice(0, 400).map((e) =>
-      `<p data-t="${e.t}">`
-      + `<span class="sb-mlyr-b">${esc(e.s)}</span>`
-      + `<span class="sb-mlyr-f">${esc(e.s)}</span>`
-      + `</p>`).join("");
-    SB_LYR.idx = -1;
+    // 单层文字：LRC 只有整行时间戳，做不出真的逐字高亮，
+    // 所以不铺那层从左往右扫的白字（看着像拿白条把上一句盖掉），只留整行点亮。
+    list.innerHTML = ly.entries.slice(0, 400)
+      .map((e) => '<p data-t="' + e.t + '"><span>' + esc(e.s) + "</span></p>").join("");
+    sbLyrSeed();
   }
-  const entries = (ly && ly.entries) || [];
-  if (!entries.length) return;
-  const cur = Number(m.elapsed) || 0;
-  let idx = -1;
-  for (let i = 0; i < entries.length; i++) { if (entries[i].t <= cur + 0.15) idx = i; else break; }
-  const ps = list.children;
-  if (!ps.length) return;
-  if (idx !== SB_LYR.idx) {
-    SB_LYR.idx = idx;
-    for (let i = 0; i < ps.length; i++) {
-      ps[i].classList.toggle("on", i === idx);
-      ps[i].classList.toggle("past", idx >= 0 && i < idx);
-    }
-    if (idx >= 0 && ps[idx]) {
-      ps[idx].dataset.fresh = "1";
-      const top = ps[idx].offsetTop - list.clientHeight / 2 + ps[idx].offsetHeight / 2;
-      // 首屏直接落位，之后换句走缓动，跟 Apple Music 一样是「滑到位」而不是跳
-      if (SB_LYR.first) { list.scrollTop = top; SB_LYR.first = false; }
-      else { try { list.scrollTo({ top: Math.max(0, top), behavior: "smooth" }); } catch (e) { list.scrollTop = top; } }
-    }
-  }
-  // 逐字覆盖：按这一句到下一句的时长，把白字从左edge推到右edge（每秒一拍，靠 CSS 补平）
-  if (idx >= 0 && ps[idx]) {
-    const t0 = entries[idx].t;
-    const t1 = entries[idx + 1] ? entries[idx + 1].t : t0 + 3.2;
-    // 目标取「下一秒」的进度：1Hz 刷新 + 0.96s 线性过渡，正好一秒走完一秒的量
-    const p = Math.max(0, Math.min(1, (cur + 1 - t0) / Math.max(0.4, t1 - t0)));
-    const f = ps[idx].querySelector(".sb-mlyr-f");
-    if (f) {
-      if (f.dataset.fresh === "1") {
-        f.dataset.fresh = "0";
-        f.style.transition = "none";
-        f.style.clipPath = "inset(0 100% 0 0)";
-        requestAnimationFrame(() => { f.style.transition = ""; });
-      }
-      const ins = (100 - p * 100).toFixed(2);
-      if (f.dataset.p !== ins) { f.dataset.p = ins; f.style.clipPath = `inset(0 ${ins}% 0 0)`; }
-    }
-  }
+  // 结构建好后由 sbLyrFrame 每帧推进，这里只保证循环在跑
+  if (!SB_LYR.raf) SB_LYR.raf = requestAnimationFrame(sbLyrFrame);
 }
+
+
 
 /* ---------- 播放列表 / 搜索专辑 ----------
    自签包没有 MusicKit 能力，所以「搜到就点播」不能自己来。这里的做法是：
@@ -3204,7 +4044,8 @@ function sbPaintAgenda() {
     box.innerHTML = `<div class="sb-ag-empty">今天没有安排</div>`;
     return;
   }
-  box.innerHTML = open.slice(0, 2).map((t) => {
+  const maxRows = window.wkHD ? 4 : 2;   // iPad 大屏多放两条，iPhone 保持原来的两条
+  box.innerHTML = open.slice(0, maxRows).map((t) => {
     const hm = String(t.due_at || "").slice(11, 16);
     return `<div class="sb-ag-row" data-sb-peek="work"><b>${hm}</b><span>${esc(t.title || "")}</span></div>`;
   }).join("") + `<div class="sb-ag-more" data-sb-peek="work">共 ${open.length} 项未完成</div>`;

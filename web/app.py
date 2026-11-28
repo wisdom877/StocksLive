@@ -51,7 +51,7 @@ STATIC = BASE / "static"
 SESSION_TTL = 24 * 3600
 TOKEN_TTL = 30 * 24 * 3600
 APP_TTL = 365 * 24 * 3600
-FEED_LIVE_LIMIT = 60   # 首屏只带 60 条，更多走 /api/v1/live 按需加载
+FEED_LIVE_LIMIT = 30   # 首屏 30 条就够读一屏半，更多走 /api/v1/live 分页，别让首屏背 60 条
 
 # 首次启动（data/auth.json 不存在）时的初始密码：环境变量优先，否则随机生成并打日志，
 # 不再内置任何固定密码（原主人设置的密码已从代码中彻底移除）
@@ -105,6 +105,17 @@ def check_password(pw: str) -> bool:
     return hmac.compare_digest(h, PASS_HASH)
 
 
+def save_password(pw: str) -> None:
+    """改密码只改 data/auth.json：旧 cookie 仍然有效，下一次登录用新密码。"""
+    global SALT, PASS_HASH
+    salt = secrets.token_bytes(16)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, 200_000)
+    p = DATA / "auth.json"
+    p.write_text(json.dumps({"salt": salt.hex(), "hash": h.hex()}))
+    p.chmod(0o600)
+    SALT, PASS_HASH = salt, h
+
+
 def _sign(exp: int) -> str:
     msg = str(exp).encode()
     return f"{exp}.{hmac.new(SECRET, msg, hashlib.sha256).hexdigest()}"
@@ -124,7 +135,15 @@ def _verify(val: str | None) -> bool:
 
 
 def is_authed(request: Request) -> bool:
+    """cookie / Bearer token / X-App-Key 三种都认。
+
+    以前只有 require_app 认 X-App-Key，于是同一个 key 打 health 能过、打 quotes 就 401，
+    脚本要记两套写法。这里统一收口。
+    """
     if _verify(request.cookies.get("sk")):
+        return True
+    k = (request.headers.get("x-app-key") or "").strip()
+    if k and hmac.compare_digest(k, APP_KEY):
         return True
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer ") and _verify(auth[7:].strip()):
@@ -264,6 +283,24 @@ def issue_token(password: str = Body(..., embed=True)):
     return {"token": _sign(exp), "expires_at": exp}
 
 
+@app.post("/api/v1/password")
+def change_password(payload: dict = Body(...), _: None = Depends(require_auth)):
+    """修改访问密码：必须先验证原密码，新密码至少 8 位。"""
+    old = str(payload.get("old") or "")
+    new = str(payload.get("new") or "")
+    if not check_password(old):
+        raise HTTPException(status_code=403, detail="原密码不正确")
+    if len(new) < 8:
+        raise HTTPException(status_code=400, detail="新密码至少 8 位")
+    if len(new) > 128:
+        raise HTTPException(status_code=400, detail="新密码太长")
+    if hmac.compare_digest(old.encode(), new.encode()):
+        raise HTTPException(status_code=400, detail="新密码不能和原密码相同")
+    save_password(new)
+    # 当前会话继续有效，顺手把 cookie 续到完整 24 小时，改完不用重新登录
+    return _cookie_response({}, SESSION_TTL)
+
+
 # ---------------- quotes ----------------
 def _codes() -> list[str]:
     return [s["code"] for s in store.list_stocks()]
@@ -279,6 +316,34 @@ def get_quotes(codes: str = "", _: None = Depends(require_auth)):
     return quote_service.quotes_snapshot(_codes())
 
 
+def _notify_status() -> dict:
+    """提醒通道是否真的能出声：开关、可用通道、已发记录条数。
+
+    以前 health 里看不到这一块，notify.timer 每分钟跑却是空转，
+    出问题时只能翻 journald 才发现「一条都没发出去」。
+    """
+    try:
+        conf = json.loads((DATA / "notify.json").read_text(encoding="utf-8"))
+    except Exception:
+        conf = {}
+    channels = []
+    if ((conf.get("bark") or {}).get("key") or "").strip():
+        channels.append("bark")
+    nf = conf.get("ntfy") or {}
+    if (nf.get("server") or "").strip() and (nf.get("topic") or "").strip():
+        channels.append("ntfy")
+    try:
+        st = json.loads((DATA / "notify_state.json").read_text(encoding="utf-8")).get("sent") or {}
+    except Exception:
+        st = {}
+    return {
+        "enabled": bool(conf.get("enabled")),
+        "channels": channels,
+        "thresholds": conf.get("thresholds") or [30, 10, 1],
+        "sent_keys": len([k for k in st if not str(k).startswith("warn:")]),
+    }
+
+
 @app.get("/api/v1/health")
 def health(_: None = Depends(require_app)):
     """本机/监控用：行情缓存年龄、上游最近错误、实时新闻游标。"""
@@ -289,6 +354,8 @@ def health(_: None = Depends(require_app)):
         "market": m,
         "quotes": quotes.cache_info(),
         "unified": quote_service.stats(),
+        "swr_fails": quote_service.fail_stats(),
+        "notify": _notify_status(),
         "live_at": store.last_live_at(),
     }
 
@@ -728,6 +795,44 @@ def dashboard(_: None = Depends(require_app)):
     return payload
 
 
+def _kline_ind(items: list[dict]) -> dict:
+    """日/周/月的 MA5/10/20 与 MACD(12,26,9)，一次算好随 K 线下发。
+
+    和前端同一套口径（简单均线 + 指数平滑），前端拿到直接用；没有 ind 时前端仍会本地兜底。
+    """
+    closes = [float(x.get("c") or 0) for x in items]
+    n = len(closes)
+    if n < 2:
+        return {}
+
+    def ma(k: int) -> list:
+        out: list = [None] * n
+        run_sum = 0.0
+        for i, v in enumerate(closes):
+            run_sum += v
+            if i >= k:
+                run_sum -= closes[i - k]
+            if i >= k - 1:
+                out[i] = round(run_sum / k, 4)
+        return out
+
+    def ema_list(arr: list, k: int) -> list:
+        a = 2 / (k + 1)
+        prev = arr[0]
+        out = [prev]
+        for v in arr[1:]:
+            prev = a * v + (1 - a) * prev
+            out.append(prev)
+        return out
+
+    dif = [a - b for a, b in zip(ema_list(closes, 12), ema_list(closes, 26))]
+    dea = ema_list(dif, 9)
+    macd = [(a - b) * 2 for a, b in zip(dif, dea)]
+    return {"ma5": ma(5), "ma10": ma(10), "ma20": ma(20),
+            "dif": [round(v, 4) for v in dif], "dea": [round(v, 4) for v in dea],
+            "macd": [round(v, 4) for v in macd]}
+
+
 @app.get("/api/v1/keylevels")
 def keylevels(code: str, _: None = Depends(require_app)):
     """详情页「关键位」四格：距MA20、20日高低、连涨天数。"""
@@ -959,6 +1064,8 @@ def _board_payload() -> dict:
             "vol_ratio": d.get("vol_ratio"), "float_cap": d.get("float_cap"),
             "total_cap": d.get("total_cap"), "pe": d.get("pe"), "pb": d.get("pb"),
             "stale": bool(d.get("stale")), "source": d.get("source", ""),
+            # 这三个字段来自本地库，不进行情源；带上它前端算持仓不用再打 /stocks
+            "shares": float(s.get("shares") or 0), "cost": s.get("cost"), "dca": s.get("dca"),
         })
     tags: dict[str, int] = {}       # 外网 API 标签计数（兼容旧字段）
     custom_tags: dict[str, int] = {}  # 自定义标签计数（前端筛选/分组用）
@@ -967,8 +1074,41 @@ def _board_payload() -> dict:
             tags[t] = tags.get(t, 0) + 1
         for t in s["custom_tags"]:
             custom_tags[t] = custom_tags.get(t, 0) + 1
+    # 持仓汇总放在服务端算：手机只负责把数字画出来，
+    # 不用为了「浮动/今日/市值/定投」那一行再单独请求 dashboard。
+    hcost = hmv = htoday = 0.0
+    rated: list[dict] = []
+    for s, o in zip(stocks, out):
+        if (s.get("bucket") or "") != "hold":
+            continue
+        sh = float(s.get("shares") or 0)
+        px = float(o.get("price") or 0)
+        if sh <= 0 or not px:
+            continue
+        costv = o.get("cost")
+        rid = q["quotes"].get(s["code"], {})
+        prev = float(rid.get("prev_close") or 0)
+        if costv not in (None, ""):
+            hcost += float(costv)
+            hmv += sh * px
+            if prev:
+                htoday += sh * (px - prev)
+        if o.get("pct") is not None:
+            rated.append({"name": s.get("name") or s["code"], "pct": o.get("pct")})
+    rated.sort(key=lambda x: float(x["pct"]), reverse=True)
+    hsum = {"n": len(rated),
+            "mv": round(hmv, 2),
+            "pnl": round(hmv - hcost, 2) if hcost else None,
+            "pct": round((hmv - hcost) / hcost * 100, 2) if hcost else None,
+            "today": round(htoday, 2) if rated else None}
     return {
         "server_time": q["server_time"], "market": q["market"], "stocks": out,
+        "sum": hsum,
+        "alert_unread": len(store.list_price_alert_events(limit=99, unread_only=True)),
+        # 定投「今天会不会真扣」也算好一起下发，手机少打一次 dca/plan
+        "dca_plan": _dca_plan_light(),
+        "lead": {"name": rated[0]["name"], "pct": rated[0]["pct"]} if rated else None,
+        "lag": {"name": rated[-1]["name"], "pct": rated[-1]["pct"]} if len(rated) > 1 else None,
         "tags": sorted(tags.items(), key=lambda kv: (-kv[1], kv[0])),
         "custom_tags": sorted(custom_tags.items(), key=lambda kv: (-kv[1], kv[0])),
         # 标签条的手动排序（长按拖动后保存），持仓/关注各一套
@@ -980,6 +1120,15 @@ def _board_payload() -> dict:
         # 不再自己猜 9:14/9:15，也能跳过节假日。
         "next_open_at": quotes.next_open_at(),
     }
+
+
+def _dca_plan_light():
+    """给 board 用的定投摘要；算不出来就返回 None，前端会退回单独请求 /dca/plan。"""
+    try:
+        return dca_plan(None)
+    except Exception as e:      # 缺基金档案之类的小概率情况不该拖垮整张 board
+        log.warning("board 内嵌 dca_plan 失败：%s", e)
+        return None
 
 
 def _board_etag_payload(d: dict) -> dict:
@@ -1194,25 +1343,72 @@ def global_search(q: str = "", limit: int = 12, _: None = Depends(require_auth))
 
 
 @app.get("/api/v1/kline/{code}")
-def kline_data(code: str, period: str = "day", limit: int = 120, _: None = Depends(require_auth)):
+def kline_data(code: str, period: str = "day", limit: int = 120, ind: int = 0,
+               _: None = Depends(require_auth)):
     if period not in kline_mod.PERIODS:
         raise HTTPException(400, "period 不支持")
     try:
-        return quote_service.kline(code, period, limit)
+        d = quote_service.kline(code, period, limit)
     except Exception as e:
         raise HTTPException(502, f"K线获取失败：{e}")
+    # 指标交给服务端算：手机上不用每次开详情页把 480 根收盘价重算一遍
+    if ind and period != "min" and isinstance(d, dict):
+        try:
+            # 浅拷贝再挂 ind：quote_service.kline 返回的是缓存对象，直接改会把指标塞进 ind=0 的响应里
+            d = dict(d)
+            d["ind"] = _kline_ind(d.get("items") or [])
+            return d
+        except Exception as e:
+            log.warning("kline 指标计算失败 %s：%s", code, e)
+    return d
+
+
+def _fund_payload(code: str, lite: bool = False) -> dict:
+    """单只场外基金档案（基金档案接口与批量接口共用同一份取数逻辑）。
+
+    lite=True 只留持仓底行和首页要用的字段，砍掉 40KB 的净值历史——详情页打开时再取全量。
+    """
+    try:
+        d = quote_service.fund_profile(code)
+    except Exception as e:
+        raise RuntimeError(str(e))
+    if not d.get("ok"):
+        raise LookupError(d.get("error") or "没有这只基金的公开数据")
+    if lite:
+        d = {k: v for k, v in d.items() if k not in ("history", "periods")}
+        d["lite"] = True
+    return d
 
 
 @app.get("/api/v1/fund/{code}")
 def fund_detail(code: str, _: None = Depends(require_auth)):
     """场外基金档案：净值、阶段涨幅、同类排名、申购状态、净值历史。"""
     try:
-        d = quote_service.fund_profile(code)
-    except Exception as e:
+        return _fund_payload(code)
+    except RuntimeError as e:
         raise HTTPException(502, f"基金档案获取失败：{e}")
-    if not d.get("ok"):
-        raise HTTPException(404, d.get("error") or "没有这只基金的公开数据")
-    return d
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/v1/funds")
+def funds_batch(codes: str = "", _: None = Depends(require_auth)):
+    """一次取多只场外基金档案。
+
+    手机端持仓页有 5 只基金，原来重开一次要发 5 个独立请求（外加详情页再各一份）；
+    这里按 codes 合并成一次，失败的码单独标 ok=false，不影响其它。
+    """
+    items = [c.strip() for c in (codes or "").split(",") if c.strip()][:24]
+    lite = True
+    out: dict = {}
+    for c in items:
+        try:
+            out[c] = _fund_payload(c, lite)
+        except RuntimeError as e:
+            out[c] = {"ok": False, "error": f"档案获取失败：{e}"[:120]}
+        except LookupError as e:
+            out[c] = {"ok": False, "error": str(e)[:120]}
+    return {"funds": out, "count": len(out)}
 
 
 # 工作台：工作类型 + 日程
@@ -1668,16 +1864,19 @@ def ai_note(payload: dict = Body(...), _: None = Depends(require_auth)):
 
 WK_FILTER_SYSTEM = """你是「数据总览」页的筛选助手，用中文跟人说话。你只负责「看什么」，绝对不能改数据：
 不许写 SQL、不许改表、不许删任何东西。每轮只输出 JSON：
-{"mode_id":0,"weeks":4,"metric":"focus","reply":"一句话"}
+{"mode_id":0,"weeks":4,"metric":"focus","q":"","reply":"一句话"}
 参数：
 - mode_id：0 = 全部专注模式；否则只能是「可选的专注模式」里给出的 id，不许编。
 - weeks：4 / 13 / 26（近四周 / 近十三周 / 近半年），说了别的取最接近的一档。
-- metric：focus=专注时长 / runs=专注场次 / task=任务完成 / shift=值班工时。
-- 值班工时和任务完成跟专注模式无关：这两项时 mode_id 必须是 0，reply 里也不许提任何模式名（写「近半年，看值班工时」）。
+- metric：focus=专注时长 / runs=专注场次 / task=任务完成 / shift=值班工时 /
+  mark=批注条数 / analysis=分析记录条数。
+- q：只在 metric 是 mark / analysis 时填。就是用户想筛的内容词，比如「健身」「司法预审」「AI」；
+  从原话里摘，别扩写，别加引号；用户没指定主题就留空字符串。
+- 值班工时、任务完成、批注、分析记录跟专注模式无关：这几项时 mode_id 必须是 0，reply 里也不许提任何模式名。
 reply 怎么写：
 - 寒暄、闲聊、和筛选无关的话（「你好」「谢谢」「你是谁」）：参数一项都不动，reply 自然接一句并给个方向，
   例如「你好，想看哪个模式、哪段时间？」。**不要**说「保持当前设置」这类机器话，也不要复述当前参数。
-- 真要改了筛选：一句话说清看什么，例如「按司法日常，近半年，看专注时长」，≤24 字。
+- 真要改了筛选：一句话说清看什么，例如「按司法日常，近半年，看专注时长」「近四周，筛含健身的批注」，≤24 字。
 - 没改参数但用户在问数据：按当前参数看，reply 说清看的是哪段哪项。
 - 永远不报具体数字（数字由页面自己显示），不解释思考过程，不道歉，不用「已为您」这套话，不要 markdown。
 """
@@ -1701,10 +1900,11 @@ def work_ai_filter(payload: dict = Body(...), _: None = Depends(require_auth)):
     cur_mid = int(payload.get("mode_id") or 0)
     cur_weeks = int(payload.get("weeks") or 4)
     cur_metric = str(payload.get("metric") or "focus")
+    cur_q = str(payload.get("q") or "").strip()[:20]
     lines = [f"{x['id']}={x['name']}（{x['runs']} 场 / {x['min']} 分钟）" for x in stats[:40]]
     ctx = (f"今天 {store.today_bj()[:10]}。\n"
            f"可选的专注模式：{'；'.join(lines) or '空'}。\n"
-           f"当前显示：mode_id={cur_mid}，weeks={cur_weeks}，metric={cur_metric}。")
+           f"当前显示：mode_id={cur_mid}，weeks={cur_weeks}，metric={cur_metric}，q={cur_q or '空'}。")
     msgs = [{"role": "system", "content": WK_FILTER_SYSTEM}]
     for m in (payload.get("history") or [])[-6:]:      # 带上前几轮，接着问「那白班呢」能听懂
         if not isinstance(m, dict):
@@ -1722,13 +1922,20 @@ def work_ai_filter(payload: dict = Body(...), _: None = Depends(require_auth)):
     if weeks not in (4, 13, 26):
         weeks = min((4, 13, 26), key=lambda x: abs(x - weeks))
     metric = str(d.get("metric") or cur_metric)
-    if metric not in ("focus", "task", "shift", "runs"):
+    if metric not in ("focus", "task", "shift", "runs", "mark", "analysis"):
         metric = cur_metric
-    # 值班工时 / 任务完成跟专注模式无关：这时把模式清成「全部」，免得抬头写着白班、数字却是全员的
-    if metric in ("shift", "task"):
+    # 内容词只在批注 / 分析记录上用；别的指标带着它会让页面以为还在筛正文
+    q = re.sub(r"\s+", " ", str(d.get("q") or "")).strip(" \t\"'“”‘’「」『』《》#，,。.！!？?")[:20]
+    # 模型偶尔会把「关于健身的批注」整段抄进 q；去掉问句外壳，只留内容词
+    q = re.sub(r"^(关于|有关|涉及|和|跟)\s*", "", q)
+    q = re.sub(r"\s*(的)?(批注|分析记录|记录)$", "", q).strip().rstrip("的")
+    if metric not in ("mark", "analysis"):
+        q = ""
+    # 值班工时 / 任务完成 / 批注 / 分析记录跟专注模式无关：这时把模式清成「全部」，免得抬头写着白班、数字却是全员的
+    if metric in ("shift", "task", "mark", "analysis"):
         mid = 0
     reply = str(d.get("reply") or "").strip()[:80] or "想看哪个模式、哪段时间？"
-    return {"ok": True, "mode_id": mid, "weeks": weeks, "metric": metric, "reply": reply,
+    return {"ok": True, "mode_id": mid, "weeks": weeks, "metric": metric, "q": q, "reply": reply,
             "mode_name": next((x["name"] for x in stats if x["id"] == mid), "全部模式")}
 
 
@@ -1997,11 +2204,11 @@ def work_day(day: str, _: None = Depends(require_auth)):
 
 
 @app.get("/api/v1/work/overview")
-def work_overview(start: str = "", end: str = "", mode: int | None = None,
+def work_overview(start: str = "", end: str = "", mode: int | None = None, q: str = "",
                   _: None = Depends(require_auth)):
-    """数据总览：按天汇总专注时长/场次/步数 + 任务完成数。值班工时由前端本地排班算。"""
+    """数据总览：按天汇总专注时长/场次/步数 + 任务完成数；批注和分析记录按天计数，q 只筛这两类。"""
     try:
-        return store.work_overview(start, end, mode)
+        return store.work_overview(start, end, mode, q)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -2353,7 +2560,6 @@ def _hr_add(items: list, max_bpm: float | None = None) -> dict:
         return d
 
 
-@app.get("/api/v1/health")
 @app.get("/api/v1/hr")
 def hr_get(bpm: float | None = None, at: float | None = None, max_bpm: float | None = None,
            _: None = Depends(require_app)):
@@ -2558,8 +2764,46 @@ def cover_get(title: str = "", artist: str = "", dur: float = 0, pic: str = "",
     return {"ok": True, "url": url, "cached": False, "track": it["name"]}
 
 
+_COVER_IMG_DIR = DATA / "cover-img"
+_COVER_IMG_HOSTS = ("gtimg.cn", "qq.com", "mzstatic.com", "apple.com")
+
+
+@app.get("/api/v1/cover_img")
+def cover_img(url: str = "", _: None = Depends(require_app)):
+    """同源封面代理：待机歌词的粒子封面要读像素（getImageData），而 QQ / 苹果图床都不发
+    CORS 头，浏览器直连只能画不能采。这里只放行已知图床，按 URL 的 md5 落盘缓存。
+    只输出图片本身的字节，和不加这层一样用；区别是同源，画布不会被污染。"""
+    if not url:
+        raise HTTPException(status_code=400, detail="缺少 url")
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    if not any(host == h or host.endswith("." + h) for h in _COVER_IMG_HOSTS):
+        raise HTTPException(status_code=403, detail="图片来源不允许")
+    os.makedirs(_COVER_IMG_DIR, exist_ok=True)
+    path = _COVER_IMG_DIR / (hashlib.md5(url.encode()).hexdigest() + ".img")
+    if path.exists() and path.stat().st_size > 1024:
+        return FileResponse(path, media_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=604800"})
+    try:
+        r = requests.get(url, timeout=8,
+                         headers={"User-Agent": "Mozilla/5.0", "Referer": "https://y.qq.com/"})
+    except Exception:
+        raise HTTPException(status_code=502, detail="封面取不到")
+    ctype = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if r.status_code != 200 or not r.content or not ctype.startswith("image/"):
+        raise HTTPException(status_code=502, detail="封面取不到")
+    body = r.content[:8 * 1024 * 1024]
+    try:
+        tmp = str(path) + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(body)
+        os.replace(tmp, str(path))
+    except Exception:
+        pass
+    return Response(content=body, media_type=ctype,
+                    headers={"Cache-Control": "public, max-age=604800"})
+
+
 _MUSIC_SEARCH_CACHE = {}
-_MUSIC_SEARCH_FILE = os.path.join(_DATA_DIR, "music_search.json") if "_DATA_DIR" in globals() else ""
 
 
 def _itunes_search(term: str, kind: str, limit: int) -> list:
@@ -2642,7 +2886,6 @@ def hr_link(request: Request, _: None = Depends(require_app)):
             "max_bpm": _hr_load().get("max_bpm") or 0}
 
 
-@app.post("/api/v1/health")
 @app.post("/api/v1/hr")
 def hr_post(payload: dict = Body(...), _: None = Depends(require_app)):
     items = payload.get("samples")
@@ -3244,7 +3487,8 @@ def live_alerts(after: int = 0, limit: int = 20, _: None = Depends(require_auth)
     #     return {"items": [], "last_id": max_id}
     # items = store.list_alerts(after, limit)
     # return {"items": items, "last_id": items[-1]["id"] if items else after}
-    return {"items": [], "last_id": store.max_alert_id()}
+    # 旧端每 60 秒来一次，别再为一条空结果查库：游标原样回给它即可。
+    return {"items": [], "last_id": max(0, int(after or 0))}
 
 
 @app.post("/api/v1/live/refresh")

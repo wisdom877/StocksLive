@@ -54,6 +54,7 @@ def _db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_PATH, timeout=15)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA synchronous=NORMAL")
     c.executescript("""
 CREATE TABLE IF NOT EXISTS holdings (
   code TEXT PRIMARY KEY,

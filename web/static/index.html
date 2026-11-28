@@ -8,17 +8,22 @@
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>黄杨工作台</title>
+<title>黄杨</title>
 <link rel="apple-touch-icon" sizes="180x180" href="static/icon-180.png">
 <link rel="icon" type="image/png" sizes="512x512" href="static/icon-512.png">
 <link rel="manifest" href="static/manifest.webmanifest">
-<meta name="application-name" content="黄杨工作台">
+<meta name="application-name" content="黄杨">
 <script>/* 主题先定：某些 WebView 不上报 prefers-color-scheme，页面自己把 html[data-theme] 摆好，
    后面的 CSS 只按这个属性取色，系统外观只在「跟随系统」时作为初值 */
 (function(){var m="auto";try{m=localStorage.getItem("appTheme")||"auto"}catch(e){}
 var d=m==="dark"||(m!=="light"&&window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches);
 document.documentElement.setAttribute("data-theme",d?"dark":"light");})();</script>
-<link rel="stylesheet" href="static/style.css?v=102">
+<script>/* 玻璃档位先落属性：首帧就用用户选的档，不留一遍默认档的白闪 */
+try{var g=localStorage.getItem("sbGlass");if(g)document.documentElement.setAttribute("data-glass",g)}catch(e){}</script>
+<script>/* HD 壳在文档开始前注入 window.wkHD；iPhone 不注入，下面整段不会执行，也不会加载 HD 样式 */if(window.wkHD){document.documentElement.classList.add("wk-hd");}</script>
+<link rel="stylesheet" href="static/style.css?v=a5bce786b7">
+<link rel="stylesheet" href="static/glass.css?v=77aadbb3f2">
+<script>if(window.wkHD){document.write('<link rel="stylesheet" href="static/style-hd.css?v=42">');}</script>
 </head>
 <body>
 <script>
@@ -39,17 +44,23 @@ window.__bootGuard = setTimeout(function () {
   }
 }, 10000);
 </script>
-<div id="splash"><div class="sp-mark"><svg viewBox="0 0 48 48" fill="none"><rect x="1.6" y="1.6" width="44.8" height="44.8" rx="12" stroke="currentColor" stroke-width="1.1" opacity=".22"/><path d="M10 33 18.6 23.2l5.8 5.6L38 13.6" stroke="#e5484d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M30.5 13.2h8v8" stroke="#e5484d" stroke-width="2.2" stroke-linecap="round"/></svg></div><div class="sp-name">黄杨工作台</div><div class="sp-tip">正在加载…</div></div>
+<div id="splash">
+  <div class="sp-boot">
+    <strong class="sp-word">Wisdom</strong>
+    <em class="sp-sub">黄杨科技</em>
+  </div>
+  <div class="sp-tip">正在载入</div>
+</div>
 
 <!-- 登录（APK 不会看到，?k= 自动登录） -->
-<section id="login" class="login hidden">
-  <div class="login-card">
-    <div class="login-mark"><svg viewBox="0 0 48 48" fill="none"><rect x="1.6" y="1.6" width="44.8" height="44.8" rx="12" stroke="currentColor" stroke-width="1.1" opacity=".22"/><path d="M10 33 18.6 23.2l5.8 5.6L38 13.6" stroke="#e5484d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M30.5 13.2h8v8" stroke="#e5484d" stroke-width="2.2" stroke-linecap="round"/></svg></div>
-    <h1>黄杨工作台</h1>
-    <p class="muted">报告 · 持仓 · 关注 · 想法</p>
-    <form id="login-form">
-      <input id="pw" type="password" placeholder="访问密码" autocomplete="current-password" required>
-      <button class="btn primary" type="submit">进入</button>
+<section id="login" class="login auth hidden">
+  <div class="auth-card">
+    <img class="auth-logo" src="static/icon-180.png" width="88" height="88" alt="黄杨">
+    <h1 class="auth-title">黄杨</h1>
+    <p class="auth-sub">报告 · 持仓 · 关注 · 想法</p>
+    <form id="login-form" class="auth-form">
+      <input id="pw" class="auth-input" type="password" placeholder="访问密码" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" required>
+      <button class="auth-btn" type="submit">进入</button>
       <p id="login-err" class="err"></p>
     </form>
     <div class="ver-tag" data-ver hidden></div>
@@ -362,6 +373,11 @@ window.__bootGuard = setTimeout(function () {
       <div class="chips wk-ov-chips" id="wk-ov-range"></div>
       <div class="chips wk-ov-chips wk-ov-modechips" id="wk-ov-modes"></div>
       <div class="chips wk-ov-chips" id="wk-ov-metric"></div>
+      <div class="wk-ov-noteq hidden" id="wk-ov-noteq">
+        <svg viewBox="0 0 20 20" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="8.6" cy="8.6" r="5.1"/><path d="M12.5 12.5 16.2 16.2"/></svg>
+        <input id="wk-ov-noteq-in" type="search" autocomplete="off" enterkeyhint="search" placeholder="搜批注内容，比如 健身" aria-label="搜索批注或分析记录内容">
+        <button type="button" class="wk-ov-noteq-x" id="wk-ov-noteq-x" aria-label="清除关键词" hidden>✕</button>
+      </div>
     </div>
     <!-- 只有热力图这块滚，筛选条在上面不动（等于悬浮的导航栏） -->
     <div class="wk-ov-scroll">
@@ -459,14 +475,16 @@ window.__bootGuard = setTimeout(function () {
 </div>
 
 <div id="toast" class="toast hidden"></div>
-<script src="static/app-base.js?v=0" data-app="1"></script>
-<script src="static/app-detail.js?v=0"></script>
-<script src="static/app-note.js?v=0"></script>
-<script src="static/app-tag.js?v=0"></script>
-<script src="static/app-trend.js?v=0"></script>
-<script src="static/app-chart.js?v=0"></script>
-<script src="static/app-work.js?v=0"></script>
-<script src="static/app-standby.js?v=0"></script>
-<script src="static/app-boot.js?v=0"></script>
+<script src="static/glass.js?v=ad811504"></script>
+<script src="static/app-base.js?v=9ba0a12168" data-app="1"></script>
+<script src="static/app-detail.js?v=9ba0a12168"></script>
+<script src="static/app-note.js?v=9ba0a12168"></script>
+<script src="static/app-tag.js?v=9ba0a12168"></script>
+<script src="static/app-trend.js?v=9ba0a12168"></script>
+<script src="static/app-chart.js?v=9ba0a12168"></script>
+<script src="static/app-work.js?v=9ba0a12168"></script>
+<script src="static/app-standby.js?v=4dbb948b32"></script>
+<script src="static/app-boot.js?v=9ba0a12168"></script>
+<script>if(window.wkHD){var s=document.createElement("script");s.src="static/hd.js?v=dd6d5b36";s.onload=function(){try{if(window.sbLayout)window.sbLayout()}catch(e){}};document.body.appendChild(s);}</script>
 </body>
 </html>

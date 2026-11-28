@@ -38,7 +38,7 @@ async function loadKline(code, period, limit, label, opts = {}) {
   let failed = false;
   // 三次退避重试：上游偶发 429/超时不再一次就放弃、留一块黑
   for (let i = 0; i < 3; i++) {
-    try { d = await api(`kline/${code}?period=${period}&limit=${lim}`, { noRetry: true }, 12000); break; }
+    try { d = await api(`kline/${code}?period=${period}&limit=${lim}&ind=${period === "min" ? 0 : 1}`, { noRetry: true }, 12000); break; }
     catch (e) { failed = true; if (i < 2) await new Promise((r) => setTimeout(r, 450 * (i + 1))); }
   }
   // 分时拿不到（新上市 / 债券ETF / 当日零成交）自动退到日K，并明确告诉用户切过周期
@@ -407,9 +407,10 @@ function drawKline(cv, d, sel) {
       const y1 = Y(Math.max(o, c)), y2 = Y(Math.min(o, c));
       ctx.fillRect(x - bw / 2, y1, bw, Math.max(y2 - y1, 1));
     }
-    // MA5 / MA10 / MA20（基于全量数据，切片绘制）
+    // MA5 / MA10 / MA20：服务端已随 K 线算好（d.ind），本地只做兜底
     const closes = all.map((x) => x.c);
-    const maFull = (k) => closes.map((_, i) => {
+    const indOf = (key) => (d.ind && Array.isArray(d.ind[key]) && d.ind[key].length === all.length ? d.ind[key] : null);
+    const maFull = (k) => indOf("ma" + k) || closes.map((_, i) => {
       if (i < k - 1) return null;
       let s = 0;
       for (let j = i - k + 1; j <= i; j++) s += closes[j];
@@ -469,16 +470,22 @@ function drawKline(cv, d, sel) {
     }
     return;
   }
-  const ema = (arr, k) => {
-    const a = 2 / (k + 1);
-    let prev = arr[0];
-    return arr.map((v, i) => (i === 0 ? v : (prev = a * v + (1 - a) * prev)));
-  };
   const closesAll = all.map((x) => x.c);
-  const e12 = ema(closesAll, 12), e26 = ema(closesAll, 26);
-  const difAll = e12.map((v, i) => v - e26[i]);
-  const deaAll = ema(difAll, 9);
-  const macdAll = difAll.map((v, i) => (v - deaAll[i]) * 2);
+  let difAll, deaAll, macdAll;
+  if (d.ind && Array.isArray(d.ind.dif) && d.ind.dif.length === all.length
+      && Array.isArray(d.ind.dea) && Array.isArray(d.ind.macd)) {
+    difAll = d.ind.dif; deaAll = d.ind.dea; macdAll = d.ind.macd;
+  } else {
+    const ema = (arr, k) => {
+      const a = 2 / (k + 1);
+      let prev = arr[0];
+      return arr.map((v, i) => (i === 0 ? v : (prev = a * v + (1 - a) * prev)));
+    };
+    const e12 = ema(closesAll, 12), e26 = ema(closesAll, 26);
+    difAll = e12.map((v, i) => v - e26[i]);
+    deaAll = ema(difAll, 9);
+    macdAll = difAll.map((v, i) => (v - deaAll[i]) * 2);
+  }
   const dif = difAll.slice(start, start + win);
   const dea = deaAll.slice(start, start + win);
   const macd = macdAll.slice(start, start + win);

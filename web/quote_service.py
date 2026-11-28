@@ -108,6 +108,9 @@ class SWR:
 
 _registry: dict[str, SWR] = {}
 _registry_lk = threading.Lock()
+# 每个 kind 的上游失败次数（主源抛错或返回空都算），进程内累计，重启清零
+_fails: dict[str, int] = {}
+_fails_lk = threading.Lock()
 
 
 def swr(name: str, build: Callable[[], Any], ttl: float | None = None,
@@ -169,14 +172,21 @@ def read(kind: str, key: str, build: Callable[[], Any], ttl: float | None = None
     """统一读取：force 直算并写回；否则 SWR；主源空/异常时按 backups 顺序降级。"""
     box = _box(kind, key, ttl, stale_max)
 
+    def _bump() -> None:
+        """记一次上游失败：health 里按 kind 汇总，market/kline 不再是沉默的 stale。"""
+        with _fails_lk:
+            _fails[kind] = _fails.get(kind, 0) + 1
+
     def _with_fallback() -> Any:
         try:
             d = build()
         except Exception as e:
             log.warning("read[%s:%s] 主源失败：%s", kind, key, e)
+            _bump()
             d = None
         if not _empty(d):
             return d
+        _bump()
         for name, fn in backups or []:
             try:
                 d2 = fn()
@@ -199,12 +209,47 @@ def read(kind: str, key: str, build: Callable[[], Any], ttl: float | None = None
     return box.get(_with_fallback)
 
 
+def _raw_code(code: str) -> str:
+    """把 sh600519 / 600519 统一剥成 600519，用来认场外基金。"""
+    c = str(code or "").strip()
+    try:
+        return quotes.secid(c)[2:]
+    except Exception:
+        return c
+
+
 def quotes_snapshot(codes: list[str]) -> dict:
-    """quotes.snapshot 的统一入口（同一代码集合共用一个缓存槽）。"""
-    key = ",".join(sorted({str(c) for c in codes if c}))
-    data, stale, age = read("quote", key or "-", lambda: quotes.snapshot(codes),
-                            backups=[("sina", lambda: quotes.snapshot(codes))])
-    return _tag(data or {}, stale, age)
+    """quotes.snapshot 的统一入口：A 股 / 场外基金分开缓存。
+
+    以前整批共用一个 2.5 秒槽，而基金净值一天一更，health 里的
+    quote:000217,… 就永远 stale=true，真正的上游异常全被这条噪音盖住。
+    """
+    want = sorted({str(c) for c in codes if c})
+    if not want:
+        return _tag({}, True, -1.0)
+    try:
+        fc = quotes.fund_codes()
+    except Exception:
+        fc = set()
+    groups = [("quote", [c for c in want if _raw_code(c) not in fc], None),
+              ("fund", [c for c in want if _raw_code(c) in fc], ttl_of("fund"))]
+    merged: dict = {}
+    stale_any, age_max = False, 0.0
+    for kind, group, ttl in groups:
+        if not group:
+            continue
+        data, stale, age = read(kind, ",".join(group),
+                                lambda g=group: quotes.snapshot(g), ttl=ttl,
+                                backups=[("sina", lambda g=group: quotes.snapshot(g))]
+                                if kind == "quote" else None)
+        if not isinstance(data, dict):
+            continue
+        merged.setdefault("server_time", data.get("server_time"))
+        merged.setdefault("market", data.get("market"))
+        merged.setdefault("quotes", {}).update(data.get("quotes") or {})
+        stale_any = stale_any or bool(stale)
+        age_max = max(age_max, float(age or 0.0))
+    return _tag(merged, stale_any, age_max)
 
 
 def quotes_fetch(codes: list[str]) -> dict:
@@ -263,3 +308,9 @@ def stats() -> dict:
             continue
         out[name] = {"age": round(age, 1), "ttl": box.ttl, "stale": age > box.ttl}
     return out
+
+
+def fail_stats() -> dict:
+    """上游失败次数（按 kind）。market / kline 这类没有退避字段的来源靠它可见。"""
+    with _fails_lk:
+        return dict(_fails)
