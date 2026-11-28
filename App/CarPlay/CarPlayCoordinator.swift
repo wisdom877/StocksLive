@@ -48,6 +48,8 @@ final class CarPlayCoordinator: NSObject {
     private var resolvingSSID = false
     private var displayedVideo = false
     private var railAllowed = false
+    /// 网页可以整条关掉右侧心率栏：出画面时右侧只留画面，不再挂心率胶囊。
+    private var railShow = true
     private var covered = false
     private var flip = false
     /// 原生画面在屏幕正中时的位置：拖动时只改 center.x，旋转矩阵保持不动。
@@ -133,6 +135,10 @@ final class CarPlayCoordinator: NSObject {
             // 待机页左上角已经有返回/关闭键，原生右上角那颗叉永远不再出现，避免两颗叉重复，
             // 也避免打开设置、重排、出画面时它被任何一条路径重新显示出来。
             closeButton.isHidden = true
+        case "rail":
+            // 网页说不要右侧心率栏就整条收掉；以后想放回来发 show:1 即可。
+            railShow = (body["show"] as? Int ?? 1) != 0
+            syncHeartRailVisibility(animated: true)
         case "overlay":
             // 网页要压一层整屏设置：先把原生视频层与心率栏收走，关掉设置再放回来。
             covered = (body["covered"] as? Int ?? 0) != 0
@@ -510,7 +516,7 @@ final class CarPlayCoordinator: NSObject {
 
     /// 没真实心率、还没出画面、或不在横向留白里时，整颗胶囊收起，不显示空壳。
     private func syncHeartRailVisibility(animated: Bool = false) {
-        let visible = active && displayedVideo && railAllowed && !covered && HeartRateCenter.shared.current() != nil
+        let visible = active && displayedVideo && railAllowed && railShow && !covered && HeartRateCenter.shared.current() != nil
         if visible {
             heartRail.isHidden = false
             if animated {
