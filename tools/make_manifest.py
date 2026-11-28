@@ -38,10 +38,13 @@ def main() -> int:
         "built_at": time.strftime("%Y-%m-%d %H:%M"),
         "ipa": {},
     }
-    for p in sorted(Path("build").glob("StocksLive*-*.ipa")):
-        plat = "ipad" if "StocksLiveHD" in p.name else "iphone"
+    for p in sorted(Path("build").glob("*.ipa")):
+        # 命名按 docs/RELEASE-NAMING.md：黄杨科技-HD-<ver>-b<build>.ipa 为 iPad
+        plat = "ipad" if "-HD-" in p.name else "iphone"
+        label = "黄杨科技 HD" if plat == "ipad" else "黄杨科技"
         doc["ipa"][plat] = {
             "file": p.name,
+            "label": label,
             "size": p.stat().st_size,
             "sha256": sha256_of(p),
         }

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 一条命令产出未签名 ipa（在 macOS + Xcode 15 上跑）
-#   ./build-ipa.sh                 # iPhone，默认 Release → build/StocksLive-0.0.3-b1.ipa
-#   ./build-ipa.sh StocksLiveHD    # iPad HD，独立 target → build/StocksLiveHD-0.0.3-b1.ipa
+#   ./build-ipa.sh                 # iPhone → build/黄杨科技-0.0.3-b1.ipa
+#   ./build-ipa.sh StocksLiveHD    # iPad HD → build/黄杨科技-HD-0.0.3-b1.ipa
+# 产物命名按 docs/RELEASE-NAMING.md：黄杨科技[-HD]-<版本>-b<构建号>.ipa
 # 版本号唯一真源：仓库根 VERSION；构建号由 BUILD_NUMBER 注入（CI 传运行号，本地默认 1）。
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -16,7 +17,13 @@ case "$BUILD" in ''|*[!0-9]*) echo "BUILD_NUMBER 必须是整数：$BUILD" >&2; 
 
 SCHEME="${1:-StocksLive}"
 PRODUCT="$SCHEME"
-OUT="${PRODUCT}-${VER}-b${BUILD}"
+# 对外文件名用产品名，工程内部的 scheme 与 target 保持 StocksLive / StocksLiveHD 不动
+case "$SCHEME" in
+  StocksLiveHD) BRAND="黄杨科技-HD" ;;
+  StocksLive)   BRAND="黄杨科技" ;;
+  *) echo "未知 scheme：$SCHEME（只支持 StocksLive / StocksLiveHD）" >&2; exit 1 ;;
+esac
+OUT="${BRAND}-${VER}-b${BUILD}"
 
 if ! command -v xcodegen >/dev/null 2>&1; then
   echo "缺 xcodegen：先跑  brew install xcodegen" >&2

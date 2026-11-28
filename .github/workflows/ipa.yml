@@ -64,18 +64,18 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: StocksLive-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}-iphone
-          path: build/StocksLive-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}.ipa
+          name: 黄杨科技-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}-iphone
+          path: build/黄杨科技-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}.ipa
           retention-days: 14
 
       - uses: actions/upload-artifact@v4
         with:
-          name: StocksLiveHD-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}-ipad
-          path: build/StocksLiveHD-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}.ipa
+          name: 黄杨科技-HD-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}-ipad
+          path: build/黄杨科技-HD-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}.ipa
           retention-days: 14
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-manifest-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}
+          name: 黄杨科技-发布清单-${{ steps.ver.outputs.ver }}-b${{ github.run_number }}
           path: build/release-manifest.json
           retention-days: 14
