@@ -1,5 +1,6 @@
 import UIKit
 import WebKit
+import Network
 import ActivityKit
 import UserNotifications
 import AVFoundation
@@ -32,6 +33,9 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     private var alarmRetry: DispatchWorkItem?
     private var alarmAttempt = 0
     private var failedURL = URL(string: "https://api.wisdomhqq.top/stocks/")!
+    /// 网络状态监视：断网时给一句人话，网络恢复立刻把页面拉回来（原来只有一张报错卡，用户得自己点重试）
+    private let netMonitor = NWPathMonitor()
+    private var netUp = true
 
     /// 站点里的 dndLockSync() 只认 window.Capacitor.Plugins.DndLive；
     /// 这里在文档开始前塞一个同名 shim，把调用转成 WK 消息，网页代码一行不用改。
@@ -153,6 +157,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
                                                    name: name, object: nil)
         }
         addBoot()
+        startNetMonitor()
         NotificationCenter.default.addObserver(self, selector: #selector(onActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
         load()
@@ -205,7 +210,10 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         boot = b
     }
 
-    private func showError(_ text: String) {
+    /// 兜底卡片：只说人话。原来这里把 NSURLErrorDomain、错误码和明文 IP 整行摊在屏上，
+    /// 真机断网时看到的就是一屏天书（“连接失败 NSURLErrorDomain -1009 … http://106.53.132.252/stocks/”）。
+    /// 现在标题与说明都由人话给，原始错误只进 NSLog，屏幕上一个字符的机器信息都不露。
+    private func showError(_ hint: String, title: String = "暂时连不上") {
         boot?.finish()
         boot = nil
         errorBox?.removeFromSuperview()
@@ -220,7 +228,15 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         label.numberOfLines = 0
         label.textColor = .label
         label.font = .systemFont(ofSize: 13)
-        label.text = "页面没加载出来\n\n" + text
+        label.text = title + "\n\n" + hint
+        // 说明文字留一点行距，别挤成一坨
+        let para = NSMutableParagraphStyle()
+        para.lineSpacing = 3
+        label.attributedText = NSAttributedString(string: label.text ?? "", attributes: [
+            .font: UIFont.systemFont(ofSize: 13),
+            .foregroundColor: UIColor.label,
+            .paragraphStyle: para
+        ])
 
         let btn = UIButton(type: .system)
         btn.translatesAutoresizingMaskIntoConstraints = false
@@ -241,6 +257,38 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             btn.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -12)
         ])
         errorBox = box
+    }
+
+    /// 网络类错误一律给“没网 / 连不上”两种人话；其余也落到一句可行动的话上
+    private func errorHint(for error: NSError) -> String {
+        switch error.code {
+        case NSURLErrorNotConnectedToInternet,
+             NSURLErrorNetworkConnectionLost,
+             NSURLErrorCannotFindHost,
+             NSURLErrorCannotConnectToHost,
+             NSURLErrorTimedOut,
+             NSURLErrorInternationalRoamingOff,
+             NSURLErrorDataNotAllowed:
+            return "当前没有网络连接。\n检查 Wi-Fi 或蜂窝网络，恢复后会自动重试。"
+        default:
+            return "暂时连不上服务器。\n网络正常时会自动重试，也可以点下面的「重试」。"
+        }
+    }
+
+    /// 网络恢复就自动重载：断网期间用户不用一直守着这张卡
+    private func startNetMonitor() {
+        netMonitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            let up = path.status == .satisfied
+            let was = self.netUp
+            self.netUp = up
+            guard up, !was else { return }
+            DispatchQueue.main.async {
+                guard self.errorBox != nil else { return }
+                self.retry()
+            }
+        }
+        netMonitor.start(queue: DispatchQueue(label: "stocks.net.monitor", qos: .utility))
     }
 
     @objc private func retry() {
@@ -284,10 +332,23 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        showError("错误 \((error as NSError).code)：\(error.localizedDescription)\n\(failedURL.absoluteString)")
+        let e = error as NSError
+        NSLog("WK didFail %@ %@ %@", e.domain, String(e.code), failedURL.absoluteString)
+        showError(errorHint(for: e))
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        let e = error as NSError
+        NSLog("WK didFailProvisional %@ %@ %@", e.domain, String(e.code), failedURL.absoluteString)
+        // 已经断网了就别再换备用入口、别再等 1s/2s/4s：重试再多次也连不上，直接给“没有网络”的卡，
+        // 网络一恢复 startNetMonitor 会自动重载。
+        if !netUp {
+            triedFallback = false
+            retryTask?.cancel()
+            autoRetry = 0
+            showError(errorHint(for: e))
+            return
+        }
         if !triedFallback {
             triedFallback = true
             load()
@@ -307,11 +368,11 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: task)
             return
         }
-        showError("连接失败 \((error as NSError).domain) \((error as NSError).code)\n\(error.localizedDescription)\n\(failedURL.absoluteString)")
+        showError(errorHint(for: e))
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        showError("WebView 进程被系统回收，点重试")
+        showError("页面进程被系统回收，点下面的重试就能恢复。", title: "页面需要重载")
     }
 
     /// 状态栏跟着系统外观走：浅色用深字、深色用浅字（原来固定 .lightContent，浅色下顶部一片白却配白字）
@@ -743,6 +804,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     deinit {
+        netMonitor.cancel()
         brightnessRampTimer?.invalidate()
         if let standbyBrightness { UIScreen.main.brightness = standbyBrightness }
     }
