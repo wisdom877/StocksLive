@@ -1034,7 +1034,7 @@ final class CarPlayCoordinator: NSObject {
             } else {
                 push(state: "waiting", message: "等待 iPad 确认连接…", extra: ["remote": 1])
             }
-        case "listening", "starting", "auth", "waiting":
+        case "listening", "starting", "auth", "ready", "waiting":
             // iPad 接收端重启后只会回 listening；iPhone 侧必须自己再发 requestSession，
             // 否则会一直停在“等 iPad 确认”，只能人工长按。
             scheduleRemoteWaitRecovery(after: 12)
