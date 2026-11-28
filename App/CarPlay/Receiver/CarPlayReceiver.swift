@@ -85,15 +85,11 @@ final class CarPlayReceiver {
         }
     }
 
-    /// 控制连接也开 TCP keepalive：Wi-Fi 短暂掉线/换 AP 时，半开连接不会
-    /// 一直占着 active 状态，系统会更快把死连接交给重连逻辑。
+    /// 控制连接关闭 Nagle 并限制建连超时：Wi-Fi 掉线/换 AP 时不会长时间
+    /// 停在“正在连接”，更快把控制权交回重连逻辑。媒体连接另有 keepalive。
     private static func tcpParameters() -> NWParameters {
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
-        tcp.keepAlive = true
-        tcp.keepAliveIdle = 5
-        tcp.keepAliveInterval = 2
-        tcp.keepAliveCount = 3
         tcp.connectionTimeout = 20
         return NWParameters(tls: nil, tcp: tcp)
     }
