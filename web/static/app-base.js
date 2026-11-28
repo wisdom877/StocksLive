@@ -256,6 +256,16 @@ const UNTAGGED = "__untagged__";
    入口：更多 → 最近错误。 */
 const ERR_LOG_KEY = "errlog";
 const ERR_LOG_MAX = 20;
+/* 累计次数：环形缓冲只留 20 行，旧行会被挤掉，所以另存一个只增不减的总数。
+   老数据没有这个键时，退回按各行 n 求和，和原来的「条」正好对上。 */
+const ERR_TOTAL_KEY = "errlog_total";
+function errLogTotal() {
+  try {
+    const saved = Number(localStorage.getItem(ERR_TOTAL_KEY) || 0);
+    if (saved > 0) return saved;
+  } catch { /* 隐私模式禁 localStorage 时退回求和 */ }
+  return errLogRead().reduce((s, r) => s + (Number(r.n) || 1), 0);
+}
 function errLogRead() {
   let a = [];
   try {
@@ -278,6 +288,8 @@ function logErr(tag, e) {
   const msg = e && e.message !== undefined ? String(e.message || e) : String(e || "");
   const row = { t: Date.now(), tag: String(tag || "?"), msg: (msg || "unknown").slice(0, 200), n: 1 };
   try { console.warn("[err]", row.tag, row.msg, e && e.stack ? e.stack : ""); } catch { /* 控制台没有也不影响留痕 */ }
+  // 先记总数再写环形缓冲：总数不随 20 行上限回落，「更多 → 最近错误」只看这一项。
+  try { localStorage.setItem(ERR_TOTAL_KEY, String(errLogTotal() + 1)); } catch { /* 隐私模式下不挡主流程 */ }
   try {
     const a = errLogRead();
     // 同一条接口、同一句原因在 5 分钟内重复失败（重试 / 每秒重跑）就并成一条记次数，
@@ -1053,8 +1065,9 @@ function nextResumeAt() {
 
 function pollDelay() {
   if (!isQuoteView()) return 60000;
-  // 5 秒一拍：3 秒让基带一直醒着，行情半天也不见得变一次；SSE/详情页另有 3 秒推送兜住细看
-  if (marketOpen()) return 5000;
+  // 盘中 8 秒一拍：原来 5 秒会让基带一直醒着，行情半天也不见得变一次；
+  // 详情页还有 SSE 3 秒推送兜住细看，列表页没必要这么密。
+  if (marketOpen()) return 8000;
   if (!state.resumeAt) state.resumeAt = nextResumeAt();
   const until = state.resumeAt - Date.now();
   // 距开盘/午休恢复不到 1 分钟：精确睡到边界；已经过点则 15s 后复查，
@@ -1081,7 +1094,10 @@ async function refreshVisible(silent) {
 
 async function runPoll() {
   if (!["feed", "hold", "watch"].includes(state.view)) return;
-  if (document.hidden) return schedulePoll();
+  // 页面在后台就按 60 秒复查一次时间，别让基带按盘中节奏一直醒着
+  if (document.hidden) return schedulePoll(60000);
+  // 手指在滚列表：这一拍先跳过，滚动停下 1.5 秒后再拉，免得边滑边重建
+  if (Date.now() < (state.scrollUntil || 0)) { schedulePoll(1500); return; }
   const quotes = isQuoteView();
   if (quotes && !marketOpen()) {
     // 醒来到开盘时刻才抓一次，其余只是复查时间，零请求
@@ -1113,6 +1129,11 @@ function stopPoll() {
   if (state.pollTimer) clearTimeout(state.pollTimer);
   state.pollTimer = null;
 }
+
+/* 滚动节流：任何列表滚起来时记一个 1.5 秒窗口，轮询这期间先让路。
+   scroll 不冒泡，但捕获阶段能拿到，不用给每个容器单独挂监听。 */
+document.addEventListener("scroll", () => { state.scrollUntil = Date.now() + 1500; },
+  { capture: true, passive: true });
 
 /* ---------- 1. feed ---------- */
 /* 报告正文排版：markdown 表格 / 分点 / 小字映射 / 涨跌上色 */
@@ -2628,6 +2649,7 @@ if (reportBtn) reportBtn.addEventListener("click", () => {
 
 /* 顶栏「更多」：回收站 / 退出登录 收进弹层，避免顶栏挤 6 个图标 */
 $("#btn-more").addEventListener("click", () => {
+  const errTotal = errLogTotal();
   openSheet("更多", `<div class="more-list">
     <button type="button" class="more-hr" id="more-hr-card">
       <span class="more-hr-l"><em class="more-hr-v" id="more-hr-bpm">—</em><i class="more-hr-z" id="more-hr-zone">未接入</i></span>
@@ -2654,7 +2676,7 @@ $("#btn-more").addEventListener("click", () => {
       <span>K线自检</span><span class="more-sub" id="more-khealth-sub">数据源与各周期可用性</span></button>
     <button type="button" class="more-row" id="more-errlog">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.8 3.8 20.2h16.4z"/><path d="M12 9.4v4.2M12 17v.1"/></svg>
-      <span>最近错误</span><span class="more-sub" id="more-errlog-sub">${errLogRead().length ? `${errLogRead().length} 条` : "没有异常"}</span></button>
+      <span>最近错误</span><span class="more-sub" id="more-errlog-sub">${errTotal ? `${errTotal} 次` : "没有异常"}</span></button>
     <button type="button" class="more-row" id="more-ai">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.6l1.7 4.3L18 9.6l-4.3 1.7L12 15.6l-1.7-4.3L6 9.6l4.3-1.7z"/></svg>
       <span>AI 助手</span><span class="more-sub" id="more-ai-sub">DeepSeek · 未配置</span></button>
@@ -2981,6 +3003,8 @@ function openVerSheet() {
       ${row("样式 · 本地", "", verShort(local.style))}
     </div>
     <div class="wk-tip">页面用的是本地这一版，括号外是服务器上的最新版；不一致时会自动刷新。</div>
+    <div class="wk-kvs" id="ver-pkg">${row("安装包", "", "读取中…")}</div>
+    <div id="ver-pkg-act"></div>
     <div class="sheet-actions"><button class="btn primary" id="ver-reload">刷新到最新</button></div>
   </div>`);
   const kvs = $("#ver-kvs");
@@ -2989,7 +3013,51 @@ function openVerSheet() {
     kvs.innerHTML = row("脚本", "", verShort(local.app)) + row("脚本 · 服务器", "", verShort(d.app))
       + row("样式", "", verShort(local.style)) + row("样式 · 服务器", "", verShort(d.style));
   }).catch(() => {});
+  verPkgLoad($("#ver-pkg"), $("#ver-pkg-act"));
   $("#ver-reload").onclick = () => reloadFresh();
+}
+
+/* 安装包下载：按设备自动取 iPhone / iPad 包，点击交给 Safari（壳里走 wkNative 的 open 指令，
+   与充值页同一套兜底）。链接必须带 /stocks 前缀：nginx 只代理这个前缀，裸 /dl/ 会 404。 */
+function verPkgLoad(box, act) {
+  if (!box || !act) return;
+  api("/release").then((d) => {
+    if (!box.isConnected) return;
+    const rel = (d && d.release) || null;
+    if (!rel) {
+      box.innerHTML = `<div class="wk-kvr"><span>安装包</span><b>暂无</b></div>`;
+      act.innerHTML = `<div class="wk-tip">还没有登记新包；打包上传后这里会出现下载按钮。</div>`;
+      return;
+    }
+    const isPad = !!window.wkHD;
+    const plat = isPad ? "ipad" : "iphone";
+    const label = isPad ? "iPad" : "iPhone";
+    const item = (rel.ipa || {})[plat];
+    // 展示名以发布清单里的 label 为准（黄杨科技 / 黄杨科技 HD），缺省时按端兜底
+    const brand = (item && item.label) || (isPad ? "黄杨科技 HD" : "黄杨科技");
+    const tag = `b${esc(String(rel.build || "—"))}${rel.commit ? ` · ${esc(String(rel.commit).slice(0, 7))}` : ""}`;
+    box.innerHTML = `<div class="wk-kvr"><span>安装包</span><b>${esc(rel.version || "—")} · ${esc(brand)}</b></div>`
+      + `<div class="wk-kvr"><span>构建</span><b>${tag}</b></div>`
+      + `<div class="wk-kvr"><span>发布</span><b>${esc(rel.published_at || "—")}</b></div>`;
+    if (!item || !item.path) {
+      act.innerHTML = `<div class="wk-tip">这一端还没有登记安装包。</div>`;
+      return;
+    }
+    const size = Number(item.size) || 0;
+    const mb = size > 0 ? ` · ${(size / 1048576).toFixed(1)} MB` : "";
+    act.innerHTML = `<div class="sheet-actions"><button class="btn primary" id="ver-ipa">下载${esc(brand)}包${mb}</button></div>`;
+    const btn = $("#ver-ipa");
+    if (!btn) return;
+    btn.onclick = () => {
+      // 文件名含中文（黄杨科技-0.0.3-b4.ipa），逐段编码后再交给 Safari，避免裸中文 404
+      const u = location.origin + "/stocks" + String(item.path).split("/").map(encodeURIComponent).join("/");
+      const h = wkNativeHandler();
+      if (h) { try { h.postMessage({ cmd: "open", url: u }); return; } catch (e) {} }
+      window.open(u, "_blank");
+    };
+  }).catch(() => {
+    if (box) box.innerHTML = `<div class="wk-kvr"><span>安装包</span><b>读取失败</b></div>`;
+  });
 }
 
 /* ---------- 最近错误：本机环形缓冲，最近 20 条 ---------- */
@@ -3010,7 +3078,7 @@ function openErrLogSheet() {
   </div>`);
   const c = $("#errlog-clear");
   if (c) c.onclick = () => {
-    try { localStorage.removeItem(ERR_LOG_KEY); } catch { /* 清不掉也不报错 */ }
+    try { localStorage.removeItem(ERR_LOG_KEY); localStorage.removeItem(ERR_TOTAL_KEY); } catch { /* 清不掉也不报错 */ }
     closeSheet();
     toast("已清空");
   };

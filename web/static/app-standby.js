@@ -4,6 +4,8 @@
 var SB_MID_HOLD = 1200;
 var sbMidHeld = false;
 var SB_DIM_AFTER = 30000;            // 待机闲置 30 秒后降亮，碰一下立刻恢复
+var SB_STILL_AFTER = 120000;         // 闲置 2 分钟进静态帧：动画全停，屏幕仍亮但不再出帧
+var SB_STILL_TICK = 60000;           // 静态帧里只剩每分钟一次时钟刷新
 
 /* 长按进入待机的手感：越接近闭合，脉冲越密、越重；闭合那一下单独来一记重击。
    iPhone 壳里走 wkHaptic（UIImpactFeedbackGenerator），没有桥接的浏览器不硬震。 */
@@ -152,6 +154,8 @@ function sbState() {
       built: false, prefsLoaded: false, on: false, page: 0, flip: false, land: false,
       pinned: false, pinAuto: false, pinTimer: null, swipeTimer: null, cpClosing: false,
       day: "", tickTimer: null, idleTimer: null, dimTimer: null, dimmed: false,
+      still: false, stillTimer: null, lockTimer: null, healAt: 0,
+      lockAfter: (function () { try { return Number(localStorage.getItem("sbLockAfter")) || 0; } catch (e) { return 0; } })(),
       wx: null, wxAt: 0, work: null, workAt: 0,
       awake: (function () { try { return localStorage.getItem("sbAwake") !== "0"; } catch (e) { return true; } })(),
       awakeTimer: null,
@@ -268,6 +272,7 @@ function sbCpWant() {
 }
 function sbCpWantSet(on) {
   try { localStorage.setItem("sbCpWant", on ? "1" : "0"); } catch (e) {}
+  if (on) sbCpBeatStart(); else sbCpBeatStop();
 }
 
 /* CarPlay 里左上角就是右上角那颗叉：和待机返回键一样长按走满一圈才退出。 */
@@ -352,19 +357,42 @@ function sbCpRetryClear() {
 function sbCpRetryArm() {
   const s = sbState();
   if (sbCpRetryTimer) return;
-  if (!s.on || document.hidden || !sbCpWant() || !sbCpAutoOn() || s.cpClosing) return;
+  if (document.hidden || !sbCpWant() || !sbCpAutoOn() || s.cpClosing) return;
+  // iPad 接收端的画面只存在于待机第 7 页，退出待机就没地方放，不盲起重连；
+  // iPhone 远程主机不发画面，退出待机也该继续守着重连（以前这里要求 s.on，退待机就永不重连）。
+  if (!s.on && sbCpHd()) return;
   const n = (Number(s.cpRetryN) || 0) + 1;
   s.cpRetryN = n;
-  const delay = Math.min(30, 2 + n * 2) * 1000;
+  // 前 12 次按 4–30 秒退避；之后固定 60 秒一次，对端真关机也不会把电耗光，回来还能自己接上。
+  const delay = (n > 12 ? 60 : Math.min(30, 2 + n * 2)) * 1000;
   sbCpRetryTimer = setTimeout(() => {
     sbCpRetryTimer = 0;
     const cur = sbState();
-    if (!cur.on || document.hidden || !sbCpWant() || !sbCpAutoOn() || cur.cpClosing) return;
+    if (document.hidden || !sbCpWant() || !sbCpAutoOn() || cur.cpClosing) return;
+    if (!cur.on && sbCpHd()) return;
     const page = document.querySelector('#sb .sb-p[data-p="6"]');
     const st = (page && page.dataset.cp) || "idle";
     if (st !== "idle" && st !== "failed") return;
     sbCarPlayStart();
   }, delay);
+}
+
+/* 与待机页解耦的兜底节拍：iPhone 退出待机后没有任何页面事件会再触发重连，
+   这里每 15 秒看一眼，状态掉回 idle/failed 就交给 sbCpRetryArm 按退避重来。 */
+var sbCpBeatTimer = 0;
+function sbCpBeatStart() {
+  if (sbCpBeatTimer) return;
+  sbCpBeatTimer = setInterval(() => {
+    const s = sbState();
+    if (!sbCpWant() || !sbCpAutoOn() || s.cpClosing) return;
+    if (document.hidden) return;                 // 后台交给原生探针，网页定时器会被系统冻结
+    if (s.on && s.page === 6) return;             // 待机页正停在车机页，原有路径已接管
+    if (sbCpHd()) return;                         // iPad 接收端只在待机页里有画面
+    sbCpRetryArm();
+  }, 15000);
+}
+function sbCpBeatStop() {
+  clearInterval(sbCpBeatTimer); sbCpBeatTimer = 0;
 }
 
 var sbCpWaitTimer = 0, sbCpWaitAt = 0;
@@ -409,6 +437,7 @@ function sbCarPlaySet(state, message) {
   }
   page.dataset.cp = state;
   page.classList.toggle("sb-cp-live", state === "video");
+  sbPaintPin();
   sbCpWaitArm(state);
   if (state === "idle" || state === "failed") {
     const stats = $("#sb-cp-stats");
@@ -676,6 +705,16 @@ function sbPinSave() {
   } catch (e) {}
 }
 
+/* CarPlay 连接期间第 6 页本来就不参与轮播（sbAutoTurn 在 s.page===6 时直接返回），
+   所以固定按钮不能再显示成可点的「固定」，而应显示「已固定」且不可点。 */
+function sbCpHoldPin() {
+  const s = sbState();
+  if (!s.on || s.page !== 6) return false;
+  const cp = document.querySelector('#sb .sb-p[data-p="6"]');
+  if (!cp) return false;
+  return (cp.dataset.cp || "idle") !== "idle" || sbCpWant();
+}
+
 function sbPaintPin() {
   const s = sbState();
   // 状态对象若被异步回调短暂改回 false，以用户点过的持久固定为准，避免按钮显示固定但页面仍轮播。
@@ -683,14 +722,16 @@ function sbPaintPin() {
     try { if (localStorage.getItem("sbPin") === "1") s.pinned = true; } catch (e) {}
   }
   const box = $("#sb"), b = $("#sb-pin");
+  const hold = !!s.pinAuto || sbCpHoldPin();     // 车机连接、停在车机页：等同已固定
+  // sb-pinned 会顺带藏掉圆点/翻转/返回，这里只跟随用户手动固定，别让车机页的 chrome 消失
   if (box) box.classList.toggle("sb-pinned", !!s.pinned);
   if (b) {
-    b.classList.toggle("on", !!s.pinned);
-    b.classList.toggle("locked", !!s.pinAuto);
-    b.textContent = s.pinned ? "已固定" : "固定";
-    b.disabled = !!s.pinAuto;
-    b.setAttribute("aria-pressed", s.pinned ? "true" : "false");
-    b.setAttribute("aria-disabled", s.pinAuto ? "true" : "false");
+    b.classList.toggle("on", !!s.pinned || hold);
+    b.classList.toggle("locked", hold);
+    b.textContent = (s.pinned || hold) ? "已固定" : "固定";
+    b.disabled = hold;
+    b.setAttribute("aria-pressed", (s.pinned || hold) ? "true" : "false");
+    b.setAttribute("aria-disabled", hold ? "true" : "false");
   }
 }
 
@@ -729,7 +770,7 @@ function sbPinAuto(on) {
 
 function sbPin() {
   const s = sbState();
-  if (s.pinAuto) return;                 // CarPlay 自动固定期间不可修改
+  if (s.pinAuto || sbCpHoldPin()) return;   // 车机页连接中已定住，按钮不可改
   s.pinned = !s.pinned;
   clearInterval(s.pinTimer);
   s.pinTimer = null;
@@ -1524,6 +1565,8 @@ function sbLayout() {
   // --sb-u 变了，封面这块要按新尺寸重新采点
   if (typeof SB_CV !== "undefined" && SB_CV.on && SB_LYR.open) sbCvMount();
   sbGo(s.page, true);
+  // 列宽对齐跟着布局走：以前是每秒在 tick 里量一次，现在只在真正变尺寸时量
+  requestAnimationFrame(sbFitCols);
 }
 
 /* ---------- 返回键：长按退出 ---------- */
@@ -1687,10 +1730,11 @@ function sbAwakeStart() {
   const s = sbState();
   if (!s.on || !s.awake) return;
   sbAwakeStop();
-  // 和 CSS 的呼吸节拍对齐：0% 小、50% 最大，正好 1.5 秒时叫一次，之后每 3 秒一次
+  // 和 CSS 的呼吸节拍对齐：0% 小、50% 最大，正好 1.5 秒时叫一次，之后每 3 秒一次。
+  // 静态帧里呼吸动画已经停了，桥消息也跟着降到每分钟一次，别让壳继续被 3 秒一次叫醒。
   const beat = () => {
     sbAwakePing();
-    s.awakeTimer = setTimeout(beat, 3000);
+    s.awakeTimer = setTimeout(beat, s.still ? 60000 : 3000);
   };
   s.awakeTimer = setTimeout(beat, 1500);
 }
@@ -1774,11 +1818,7 @@ function sbOpen() {
   sbAwakePaint();
   sbAwakeStart();
   sbStartTimers();
-  sbLoadWx();
-  sbLoadWork();
-  sbLoadDash();
-  sbLoadQuotes();
-  sbLoadStocks();
+  sbLoadPack();       // 首屏一次拿全，不再五个接口排队
   try {
     if (typeof wkLoadCalData === "function") {
       const p = wkLoadCalData();
@@ -1796,11 +1836,18 @@ function sbClose(instant) {
   clearInterval(s.pinTimer); s.pinTimer = null;
   // 人可能正停在别的轮播页上，会话照样要收干净，不能留下没人管的 CarPlay 连接。
   const cpLive = sbCpVideo() || sbCpWant();
-  sbCpWantSet(false);
-  sbCpRetryClear();
+  // iPhone 远程主机退出待机不该拆会话：它不负责画面，拆了以后对端会静默挂死，
+  // 而且重连入口都挂在待机页上。保留意图、留着重试，回到待机页再自动续上。
+  const cpKeep = cpLive && !sbCpHd();
+  if (cpKeep) {
+    sbCpRetryArm();
+  } else {
+    sbCpWantSet(false);
+    sbCpRetryClear();
+  }
   sbPinSave();
   sbPaintPin();
-  if (SB_CP_LAST === 6 || cpLive) sbCarPlayMsg({ cmd: "stop" });
+  if (!cpKeep && (SB_CP_LAST === 6 || cpLive)) sbCarPlayMsg({ cmd: "stop" });
   s.on = false;
   sbBootAbort();
   sbDimOff();
@@ -1823,7 +1870,7 @@ function sbClose(instant) {
     localStorage.setItem("sbPage", String(s.page));
     localStorage.setItem("sbStay", "0");
     localStorage.setItem("sbPin", "0");
-    localStorage.setItem("sbCpWant", "0");
+    if (!cpKeep) localStorage.setItem("sbCpWant", "0");
   } catch (e) {}
   if (!box) return;
   if (instant) {
@@ -1853,12 +1900,75 @@ function sbClose(instant) {
 function sbStartTimers() {
   const s = sbState();
   if (s.tickTimer) return;
-  s.tickTimer = setInterval(sbTick, 1000);
+  s.tickTimer = setTimeout(sbTickLoop, 1000);
+}
+
+/* 1 秒一拍改成自排队：静态帧里下一拍自己推到 60 秒，不再每秒醒一次去空转 */
+function sbTickLoop() {
+  const s = sbState();
+  s.tickTimer = null;
+  if (!s.on) return;
+  sbTick();
+  if (s.on) s.tickTimer = setTimeout(sbTickLoop, s.still ? SB_STILL_TICK : 1000);
 }
 
 function sbStopTimers() {
   const s = sbState();
-  if (s.tickTimer) { clearInterval(s.tickTimer); s.tickTimer = null; }
+  if (s.tickTimer) { clearTimeout(s.tickTimer); s.tickTimer = null; }
+  sbStillOff();
+}
+
+/* ---------- 静态帧：闲置两分钟后停掉所有常驻动画 ----------
+   屏幕仍然常亮（awake 那套不变），但不再有漂移、呼吸、秒数与歌词跟手；
+   只留每分钟一次时钟刷新。任何触摸 / 翻页都立刻退出静态帧。 */
+function sbStillOn() {
+  const s = sbState();
+  if (!s.on || s.still) return;
+  if (s.page === 6 || (typeof sbCarPlayVideoOn === "function" && sbCarPlayVideoOn())) return;  // 车机画面不冻
+  s.still = true;
+  document.documentElement.setAttribute("data-sb", "still");
+  // 壳的 1Hz 播放推送也停掉：画面已经冻结，再每秒推一次只是让 WebView 醒着
+  if (typeof muSend === "function") { try { muSend("stop"); } catch (e) {} }
+}
+
+function sbStillOff() {
+  const s = sbState();
+  if (s.stillTimer) { clearTimeout(s.stillTimer); s.stillTimer = null; }
+  if (s.lockTimer) { clearTimeout(s.lockTimer); s.lockTimer = null; }
+  if (!s.still) return;
+  s.still = false;
+  document.documentElement.removeAttribute("data-sb");
+  // 静态帧里停掉的播放推送，退出后立刻接上，进度条才不会停在冻结那一刻
+  if (typeof muSend === "function") { try { muSend("start"); } catch (e) {} }
+}
+
+function sbStillArm() {
+  const s = sbState();
+  if (s.stillTimer) { clearTimeout(s.stillTimer); s.stillTimer = null; }
+  if (!s.on || s.page === 6 || document.hidden) { sbStillOff(); return; }
+  s.stillTimer = setTimeout(() => {
+    s.stillTimer = null;
+    if (!s.on || document.hidden || s.page === 6) return;
+    sbStillOn();
+    sbLockArm();
+  }, SB_STILL_AFTER);
+}
+
+/* 自动锁屏：静态帧之后再等 N 分钟，把「常亮」还回系统，让它按自己的自动锁屏时间去锁。
+   0 = 一直常亮（默认，行为和以前一样）。 */
+function sbLockArm() {
+  const s = sbState();
+  if (s.lockTimer) { clearTimeout(s.lockTimer); s.lockTimer = null; }
+  const min = Number(s.lockAfter) || 0;
+  if (!s.on || min <= 0) return;
+  s.lockTimer = setTimeout(() => {
+    s.lockTimer = null;
+    if (!s.on || !s.still) return;
+    try {
+      const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.wkNative;
+      if (h) h.postMessage({ cmd: "awake", on: 0 });
+    } catch (e) {}
+  }, min * 60000);
 }
 
 /* 回前台立刻向壳要一次真实播放进度，再让整屏歌词重判当前句。
@@ -2111,11 +2221,12 @@ function sbPageSet(idx) {
   s.page = idx;
   try { localStorage.setItem("sbPage", String(idx)); } catch (e) {}
   sbPaintDots();
-  if (idx === 1) { sbLoadWx(); sbLoadDash(); sbLoadQuotes(); sbLoadStocks(); }
+  if (idx === 1) sbLoadPack();
   if (idx === 5) sbLoadWork();
   // 落页是唯一真相：手指拖动（sbDragEnd）和点圆点（sbGo）都经过这里，
   // 车机原生层要跟着收/放，返回键也要跟着换形态，绝不能只挂在 sbGo 上。
   sbCarPlayPage(idx);
+  sbPaintPin();
 }
 
 function sbScroll() {
@@ -2359,12 +2470,14 @@ function sbIdleReset() {
   const s = sbState();
   clearTimeout(s.idleTimer);
   sbDimOff();
+  sbStillOff();          // 有触摸就立刻退出静态帧，动画随即恢复
   const box = $("#sb");
   if (box) box.classList.remove("sb-incog");
   s.idleTimer = setTimeout(() => {
     if (s.on) $("#sb").classList.add("sb-incog");
   }, 5000);
   sbDimArm();
+  sbStillArm();
 }
 
 function sbMidTap(e) {
@@ -2447,6 +2560,11 @@ function sbSetHtml() {
       <div class="sb-set-hint">切后台、断连或重开 App 后自动续上，不用再长按 Hello</div>
     </section>
     <section class="sb-set-card">
+      <div class="sb-set-eyebrow">常亮与省电</div>
+      <div class="sb-set-row"><span>自动锁屏</span>${sbSetSeg([[0, "不锁"], [10, "10 分钟"], [30, "30 分钟"]], sbState().lockAfter, "sb-lockafter")}</div>
+      <div class="sb-set-hint">闲置两分钟后进静态帧（动画全停、只走分钟）；选了自动锁屏会再等这段时间把常亮还给系统</div>
+    </section>
+    <section class="sb-set-card">
       <div class="sb-set-eyebrow">编码与输出</div>
       <div class="sb-set-row"><span>编码</span>${sbSetSeg([["h264", "H.264"], ["h265", "H.265"]], codec, "sb-cpcodec")}</div>
       <div class="sb-set-hint">H.265 更省带宽；车机不兼容时切回 H.264</div>
@@ -2507,6 +2625,16 @@ function sbSetPaint() {
       e.stopPropagation();
       sbPrefSet("cpCodec", b.dataset.sbCpcodec);
       sbCpConfigSend();
+      sbSetPaint();
+    };
+  });
+  scroll.querySelectorAll("[data-sb-lockafter]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const s = sbState();
+      s.lockAfter = Number(b.dataset.sbLockafter) || 0;
+      try { localStorage.setItem("sbLockAfter", String(s.lockAfter)); } catch (err) {}
+      sbLockArm();
       sbSetPaint();
     };
   });
@@ -2811,8 +2939,13 @@ function sbTick() {
   }
   // 自愈：翻页被打断停在两张之间、或进待机时量到转屏中间尺寸，都靠这两条兜住。
   // 只在非视频态做：视频态被原生层盖住，重排没有收益，还会跟视频抢主线程。
-  sbHealPage();
-  sbHealStage();
+  // 这两条都要读 clientWidth / getBoundingClientRect，原来是每秒一次；现在降到 5 秒一次，
+  // 滑动结束和翻页本来就会各自落位，这里只是兜底，不需要秒级。
+  if (Date.now() - (s.healAt || 0) > 5000) {
+    s.healAt = Date.now();
+    sbHealPage();
+    sbHealStage();
+  }
   // 正在滑动或刚松手的那半秒先只走时钟：卡片背面没有模糊了，但重排 DOM 仍会吃掉滑动的帧
   if (Date.now() - (s.scrollingAt || 0) > 500) {
     sbPaintHr();
@@ -2828,11 +2961,64 @@ function sbTick() {
   const login = $("#login:not(.hidden)");
   if (sheet || login) { sbClose(true); return; }
   sbAutoTurn();
-  if (s.work && Date.now() - s.workAt > 60e3) sbLoadWork();
-  if (s.dash && Date.now() - s.dashAt > 60e3) sbLoadDash();
-  if (s.quotes && Date.now() - s.quotesAt > 60e3) sbLoadQuotes();
-  if (s.stocks && Date.now() - s.stocksAt > 10 * 60e3) sbLoadStocks();
+  // 六个口原来各拉各的，一分钟最多六次请求、六次唤醒基带。现在合成一次 pack（服务端 60s TTL），
+  // 谁的额度到了就顺手一次拿全；服务端某路失败会回上一次的值并带 stale，不会把整屏拖空。
+  if (Date.now() - (s.packAt || 0) > 60e3) sbLoadPack();
+  // 心率是要「在跳」的观感，单独保留 25 秒一问，但只在 pack 没赶上时才打
   if (Date.now() - (s.hrAt || 0) > 25e3) sbLoadHr();
+}
+
+/* 待机聚合：六个接口一次拿回，省掉 5 次往返与 5 次射频唤醒 */
+async function sbLoadPack() {
+  const s = sbState();
+  if (!s.on || s.packBusy) return;
+  s.packBusy = true;
+  const at = Date.now();
+  try {
+    const d = await api("standby/pack", { noRetry: true }, 15000);
+    s.packAt = at;
+    if (d && d.ok) {
+      if (d.quotes && d.quotes.quotes) { s.quotes = d.quotes; s.quotesAt = at; }
+      if (d.work) { s.work = d.work; s.workAt = at; state.work = d.work; }
+      if (d.dashboard) { s.dash = d.dashboard; s.dashAt = at; }
+      if (d.weather && d.weather.ok) { s.wx = d.weather; s.wxAt = at; }
+      if (d.stocks) { s.stocks = d.stocks.stocks || d.stocks || []; s.stocksAt = at; }
+      if (d.hr && d.hr.ok) {
+        s.hrAt = at;
+        if (Number(d.hr.max_bpm)) s.hrMax = Number(d.hr.max_bpm);
+        if (d.hr.metrics && typeof d.hr.metrics === "object") {
+          s.health = Object.assign({}, s.health || {}, d.hr.metrics);
+          s.healthAt = Number(d.hr.metrics_at) * 1000 || s.healthAt;
+        }
+        const remote = (d.hr.samples || [])
+          .map((x) => {
+            let t = Number(x.at) || 0;
+            if (t && t < 1e12) t *= 1000;
+            return { v: Number(x.bpm), t };
+          })
+          .filter((x) => x.v >= 25 && x.v <= 240);
+        if (remote.length) {
+          const seen = new Map((s.hr || []).map((x) => [x.t, x]));
+          remote.forEach((x) => seen.set(x.t, x));
+          const cut = Date.now() - 30 * 60 * 1000;
+          s.hr = [...seen.values()].filter((x) => x.t >= cut)
+            .sort((a, b) => a.t - b.t).slice(-1800);
+        }
+        const latest = (s.hr || [])[s.hr.length - 1];
+        if (latest && typeof sbHrPushNative === "function") sbHrPushNative(latest.v, latest.t);
+      }
+      sbPaintMarket();
+      sbPaintFocus();
+      sbPaintAgenda();
+      sbPaintMeta();
+      sbPaintHealth();
+    } else {
+      s.packAt = at - 45e3;   // 没有内容：45 秒后再试，不每秒打
+    }
+  } catch (e) {
+    s.packAt = at - 45e3;
+  }
+  s.packBusy = false;
 }
 
 /* ---------- 数据 ---------- */
@@ -2969,7 +3155,7 @@ function sbPaintTime(n) {
   $("#sb-hm").textContent = hm;
   $("#sb-hm2").textContent = hm;
   $("#sb-sec").textContent = sbPad(n.ss);
-  requestAnimationFrame(sbFitCols);
+  // 列宽对齐只在布局变化时算：这里每秒量两次 getBoundingClientRect，等于每秒强制一次重排
 }
 
 function sbPaintAnalog(n) {
@@ -2993,6 +3179,26 @@ function sbIsTrading(day) {
 }
 
 let sbCalLoading = false;
+
+/* 月历网格：整月几号、周几起、每天农历/节假日/是否休市，都由服务端算好一次性给回。
+   手机不再逐日去翻两张 JSON、也不再自己算月末与周首；翻月才请求一次，结果常驻内存。
+   请求不回来就继续用本地算法兜住，绝不空着。 */
+const SB_CAL_GRID = Object.create(null);
+const SB_CAL_WANT = Object.create(null);
+function sbCalGrid(y, m) {
+  const k = `${y}-${sbPad(m)}`;
+  if (SB_CAL_GRID[k]) return SB_CAL_GRID[k];
+  if (!SB_CAL_WANT[k]) {
+    SB_CAL_WANT[k] = 1;
+    api(`standby/cal?y=${y}&m=${m}`, { noRetry: true }, 10000).then((d) => {
+      if (d && d.ok && d.cells) {
+        SB_CAL_GRID[k] = d;
+        try { sbPaintCal(sbNow()); } catch (e) {}
+      }
+    }).catch(() => { SB_CAL_WANT[k] = 0; });
+  }
+  return null;
+}
 function sbPaintCal(n) {
   const grid = $("#sb-grid");
   if (!grid) return;
@@ -3025,14 +3231,18 @@ function sbPaintCal(n) {
     } catch (e) {}
   }
 
+  const sgrid = (typeof sbCalGrid === "function") ? sbCalGrid(y, m) : null;
   let cells = "";
   for (let i = 0; i < lead; i++) cells += `<span class="sb-gc blank"></span>`;
   for (let d = 1; d <= days; d++) {
     const day = `${y}-${sbPad(m)}-${sbPad(d)}`;
     const info = (typeof sbShiftInfo === "function") ? sbShiftInfo(day) : null;
     const t = info && info.type;
-    const hol = (function () { try { return (typeof wkHolidayOf === "function" && wkHolidayOf(day)) || null; } catch (e) { return null; } })();
-    const lunar = (function () { try { return (typeof wkLunarText === "function" && wkLunarText(day)) || ""; } catch (e) { return ""; } })();
+    const gcell = sgrid && sgrid.cells ? sgrid.cells[d - 1] : null;
+    const hol = (gcell && gcell.hol) ||
+      (function () { try { return (typeof wkHolidayOf === "function" && wkHolidayOf(day)) || null; } catch (e) { return null; } })();
+    const lunar = (gcell && gcell.lunar) ||
+      (function () { try { return (typeof wkLunarText === "function" && wkLunarText(day)) || ""; } catch (e) { return ""; } })();
     const off = !!(hol && hol.off) || !!(t && t.kind === "off") || !!(info && info.rest);
     const wk = !!(hol && hol.work);
     const top = hol && hol.off && hol.name ? hol.name : lunar;
@@ -3732,13 +3942,15 @@ function sbLyrAnchor(list, p) {
 
 /* 每帧：换句只改类和目标，滚动按真实帧时长跟过去，
    没有「停三秒、动半秒」的顿挫，整列一直在走。 */
-function sbLyrFrame(ts) {
-  if (!SB_LYR.open) { SB_LYR.raf = 0; return; }
+/* 歌词跟手：不再常驻 60fps 的 JS 循环。现在只在每秒一次的 tick 里算一次当前行，
+   行一动就把新的 scrollTop 交给 CSS 的 scroll-behavior:smooth 去滑——
+   滚动动画在合成层完成，主线程不再每帧读写 scrollTop。 */
+function sbLyrFrame() {
   const list = $("#sb-mlyr-list");
-  if (!list) { SB_LYR.raf = 0; return; }
-  SB_LYR.raf = requestAnimationFrame(sbLyrFrame);
+  if (!SB_LYR.open || !list) return;
   const entries = (state.lyric && state.lyric.entries) || [];
   if (!entries.length || !SB_LYR.rendered) return;
+  if (performance.now() < SB_LYR.holdUntil) return;      // 手指刚在这块上滑过，先不接管
 
   const t = sbLyrClock();
   let idx = -1;
@@ -3746,7 +3958,6 @@ function sbLyrFrame(ts) {
   const ps = list.children;
   if (idx !== SB_LYR.idx) {
     SB_LYR.idx = idx;
-
     for (let i = 0; i < ps.length; i++) {
       if (!ps[i].dataset || ps[i].dataset.t == null) continue;
       ps[i].classList.toggle("on", i === idx);
@@ -3755,22 +3966,9 @@ function sbLyrFrame(ts) {
   }
 
   const target = (idx >= 0 && ps[idx] && ps[idx].dataset.t != null) ? sbLyrAnchor(list, ps[idx]) : 0;
-  const dt = Math.min(0.05, Math.max(0.004, (ts - (SB_LYR.lastAt || ts)) / 1000));
-  SB_LYR.lastAt = ts;
-
-  if (performance.now() < SB_LYR.holdUntil) {
-    // 手指刚在这块上滑过：先把位置跟回手指，松手几秒后再接管
-    SB_LYR.y = list.scrollTop;
-    return;
-  }
-  // 按真实帧时长做指数跟手（τ≈0.12s，约 0.36s 落位）：起步就走、末尾轻放，
-  // 和帧率无关，卡一帧也不会把整段动画拖成慢动作。
-  const rest = target - SB_LYR.y;
-  // 手动翻出去好几行再回来时直接归位：飞越几百像素的「快速滚动」反而难看
-  if (Math.abs(rest) > (SB_LYR.pitch || 40) * 3) SB_LYR.y = target;
-  else SB_LYR.y += Math.abs(rest) < 0.35 ? rest : rest * (1 - Math.exp(-dt / 0.12));
-  list.scrollTop = SB_LYR.y;
-  SB_LYR.y = list.scrollTop;                       // Safari 会把 scrollTop 取整，读回来免得越积越偏
+  if (Math.abs((list.scrollTop || 0) - target) < 1) return;
+  list.scrollTop = target;
+  SB_LYR.y = target;
 }
 
 /* 首屏 / 换歌：直接落位，不从顶上滚下来 */
@@ -3866,8 +4064,10 @@ function sbAmbSync(url) {
     if (el) { el.classList.remove("sb-amb-on"); el.style.removeProperty("--sb-amb-img"); }
     return;
   }
+  // 氛围层要的是「一片糊开的颜色」，不需要细节：让服务器缩到 240 宽再模糊 12px，
+  // 手机只负责把这张小图放大铺满。以前是 52–136px 的全屏实时模糊，每帧都在烧 GPU。
   const src = (/^http/i.test(u) && u.indexOf(location.origin) !== 0)
-    ? API + "/cover_img?url=" + encodeURIComponent(u) : u;
+    ? API + "/cover_img?url=" + encodeURIComponent(u) + "&w=240&b=12" : u;
   img.onload = () => {
     if (SB_AMB.url !== u) return;
     SB_AMB.on = true;
@@ -3937,7 +4137,6 @@ function sbLyrOpen() {
 function sbLyrClose(silent) {
   const el = $("#sb-mlyr");
   if (!el) return;
-  if (SB_LYR.raf) { cancelAnimationFrame(SB_LYR.raf); SB_LYR.raf = 0; }
   const lyrEl = $("#sb-mlyr");
   if (lyrEl) lyrEl.classList.remove("has-art");
   SB_LYR.open = false;
@@ -3975,8 +4174,8 @@ function sbLyrPaint(force) {
       .map((e) => '<p data-t="' + e.t + '"><span>' + esc(e.s) + "</span></p>").join("");
     sbLyrSeed();
   }
-  // 结构建好后由 sbLyrFrame 每帧推进，这里只保证循环在跑
-  if (!SB_LYR.raf) SB_LYR.raf = requestAnimationFrame(sbLyrFrame);
+  // 结构建好后由 tick 每秒推进一次（sbLyrFrame 只算一次，不自己排帧）
+  sbLyrFrame();
 }
 
 

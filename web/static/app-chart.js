@@ -110,7 +110,8 @@ function startKlineTimer(code, period) {
     if ((cv._off || 0) > 0 || cv._sel !== null && cv._sel !== undefined) return;
     cv._busy = true;
     try {
-      const d = await api(`kline/${code}?period=${period}&limit=480`).catch(() => null);
+      // ind 一律让服务端算：本机只画，不重算 480 根收盘价的 EMA/MACD
+      const d = await api(`kline/${code}?period=${period}&limit=480&ind=${period === "min" ? 0 : 1}`).catch(() => null);
       if (!d || !d.items || !d.items.length) return;
       d.period = period;
       cv._d = d;

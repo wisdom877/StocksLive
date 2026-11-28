@@ -31,9 +31,9 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/StocksLive.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
-        MARKETING_VERSION: "0.0.3"
+        MARKETING_VERSION: "0.0.5"
         SWIFT_OBJC_BRIDGING_HEADER: App/CarPlay/CarPlay-Bridging-Header.h
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "5"
     dependencies:
       - target: DndLiveWidget
         embed: true
@@ -61,10 +61,10 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/StocksLive.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "2"
-        MARKETING_VERSION: "0.0.3"
+        MARKETING_VERSION: "0.0.5"
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "HD_BUILD"
         SWIFT_OBJC_BRIDGING_HEADER: App/CarPlay/CarPlay-Bridging-Header.h
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "5"
     dependencies:
       - sdk: HealthKit.framework
       - sdk: MediaPlayer.framework
@@ -85,8 +85,8 @@ targets:
         SKIP_INSTALL: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        MARKETING_VERSION: "0.0.3"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "0.0.5"
+        CURRENT_PROJECT_VERSION: "5"
 
 schemes:
   StocksLive:

@@ -86,7 +86,10 @@ html[data-theme="light"][data-glass="solid"]{
   --glass-line:var(--gls-edge);
 }
 #sb{
-  --sb-blur:var(--gls-f);
+  /* 待机默认走实心：底色已经由服务器预模糊好（cover_img?w=220&b=11），
+     再叠 backdrop-filter 只是把同一张图再糊一遍，白烧 GPU。只有在「通透 / 厚实」两档
+     才把实时模糊放回来，层次感更强，也让想要原来观感的人有开关。 */
+  --sb-blur:none; --sb-gls:none; --sb-gls-lg:none;
   --sb-rim:var(--gls-edge);
   --sb-spec:var(--gls-hi);
   --sb-fill-hi:var(--gls-fill-hi); --sb-fill-lo:var(--gls-fill-lo);
@@ -102,13 +105,21 @@ html[data-theme="light"] #sb{
 }
 /* 浅色那一段在 style.css 里用了更高优先级，这里同优先级补一份，保证 token 一路生效 */
 html[data-theme="light"] #sb{
-  --sb-blur:var(--gls-f);
+  /* 待机默认走实心：底色已经由服务器预模糊好（cover_img?w=220&b=11），
+     再叠 backdrop-filter 只是把同一张图再糊一遍，白烧 GPU。只有在「通透 / 厚实」两档
+     才把实时模糊放回来，层次感更强，也让想要原来观感的人有开关。 */
+  --sb-blur:none; --sb-gls:none; --sb-gls-lg:none;
   --sb-rim:var(--gls-edge);
   --sb-spec:var(--gls-hi);
   --sb-fill-hi:var(--gls-fill-hi); --sb-fill-lo:var(--gls-fill-lo);
   --sb-card-hi:var(--gls-card-hi); --sb-card-lo:var(--gls-card-lo);
   --sb-pill-sh:var(--gls-hi),var(--gls-sh);
   --sb-card-sh:var(--gls-hi),var(--gls-sh-lg);
+}
+/* 通透 / 厚实两档才给待机保留实时模糊 */
+html[data-glass="clear"] #sb,
+html[data-glass="deep"] #sb{
+  --sb-blur:var(--gls-f); --sb-gls:var(--gls-f); --sb-gls-lg:var(--gls-f-lg);
 }
 
 /* ---- 唯一的「上玻璃」两处清单：加胶囊只加名字，不写第二套 CSS ---- */
@@ -120,13 +131,13 @@ html[data-theme="light"] #sb{
         .sb-wo-zone,
         .sb-cp-btn,.sb-cp-ok,.sb-cp-cancel,.sb-cp-link,.sb-cp-retry,.sb-cp-badge,.sb-cp-tip,
         .sb-cp-hr,.sb-cp-cap){
-  -webkit-backdrop-filter:var(--gls-f);
-  backdrop-filter:var(--gls-f);
+  -webkit-backdrop-filter:var(--sb-gls);
+  backdrop-filter:var(--sb-gls);
 }
 /* 待机页大面板（今日盈亏 / 心率体能 / 月历 / 待办 …）：卡片跟胶囊同一套 token，只是模糊档更大一档 */
 #sb :is(.sb-glass){
-  -webkit-backdrop-filter:var(--gls-f-lg);
-  backdrop-filter:var(--gls-f-lg);
+  -webkit-backdrop-filter:var(--sb-gls-lg);
+  backdrop-filter:var(--sb-gls-lg);
 }
 /* 主站：底部标签栏 / 顶栏三条 / 弹层头 / 播放条 / 分页 / 更多 / 分段控件 / AI 条 */
 :is(.tabbar,.tab-thumb,.topbar .top-left,.topbar .top-right,.topbar .top-mid,
