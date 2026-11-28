@@ -353,9 +353,11 @@ final class CarPlayCoordinator: NSObject {
             }
             return
         }
+        // Wi-Fi SSID 读取在部分系统上会长期不回调；远程主机启动不能被它卡死。
+        // 上一次读取还没回来就作废旧请求，直接按已有 SSID 或占位名启动。
         if resolvingSSID {
-            push(state: "starting", message: "正在读取当前 Wi-Fi…")
-            return
+            resolvingSSID = false
+            log("丢弃未完成的 Wi-Fi SSID 读取")
         }
         guard let target = remoteTarget else {
             push(state: "failed", message: "请先填写 iPad 的局域网地址。")
@@ -371,14 +373,9 @@ final class CarPlayCoordinator: NSObject {
             beginRemote(target: target, ssid: saved, password: stored ?? "")
             return
         }
-        resolvingSSID = true
-        push(state: "starting", message: "正在读取当前 Wi-Fi…")
-        ssidReader.currentSSID { [weak self] name in
-            guard let self, self.resolvingSSID else { return }
-            self.resolvingSSID = false
-            guard !self.active else { return }
-            self.requestCredentials(ssid: name)
-        }
+        // 远程链路真正需要的是 iPad 的 IP:7000；SSID/密码只用于配件描述。
+        // 没有历史凭据时不再弹“读取 Wi-Fi”，先用 CarPlay 占位把探针发出去。
+        beginRemote(target: target, ssid: "CarPlay", password: "")
     }
 
     private func startReceiver() {
