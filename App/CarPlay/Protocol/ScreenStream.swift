@@ -2,41 +2,66 @@
 // AirPlay screen framing adapted from PlayPort ScreenStream.kt.
 import Foundation
 import CryptoKit
+import QuartzCore
+
+/// 一条视频记录：Annex-B 访问单元，外加从流头里解析到的 iPhone 时钟时间戳（解析不到就是 nil）。
+public struct ScreenUnit {
+    public let data: Data
+    public let streamTime: Double?
+}
 
 public final class ScreenStream {
     private let key: SymmetricKey
     private var buffer = Data()
+    /// 已消费到 buffer 的哪个位置。避免每帧把剩余缓冲整段重拷（P1-3）。
+    private var cursor = 0
     private var counter: UInt64 = 0
     private var failed = false
-    /// Codec announced by the most recent configuration record. H.264 until one arrives.
+    private var lastStreamTime: Double?
+    private var dumpedHeaders = 0
+    private var reportedTimestamp = false
+    /// 设备时钟的口径修正：NTP 秒（1900 起）→ Unix 秒。
+    private static let ntpEpoch: Double = 2_208_988_800
     public private(set) var codec: VideoCodec = .h264
+    var onLog: ((String) -> Void)?
     public init(secret: SymmetricKey, connectionID: UInt64) {
         key = PairVerify.derive(secret, salt: "DataStream-Salt\(connectionID)", info: "DataStream-Output-Encryption-Key")
     }
+
     /// Each returned access unit is Annex-B, including parameter-set configuration units.
-    public func append(_ bytes: Data) throws -> [Data] {
+    public func append(_ bytes: Data) throws -> [ScreenUnit] {
         guard !failed else { throw ProtocolError.malformed(CWL("视频流已关闭")) }
+        let started = CACurrentMediaTime()
+        var result: [ScreenUnit] = []
         do {
-            guard buffer.count + bytes.count <= 8 * 1024 * 1024 + 128 + 65536 else { throw ProtocolError.limitExceeded(CWL("视频缓冲区")) }
-            buffer.append(bytes); var result: [Data] = []
-            while buffer.count >= 128 {
-                let length = (0..<4).reduce(0) { $0 | (Int(buffer.byte($1)) << ($1 * 8)) }
+            guard buffer.count - cursor + bytes.count <= 8 * 1024 * 1024 + 128 + 65536 else {
+                throw ProtocolError.limitExceeded(CWL("视频缓冲区"))
+            }
+            buffer.append(bytes)
+            while buffer.count - cursor >= 128 {
+                let hBase = cursor, bBase = cursor + 128
+                let length = (0..<4).reduce(0) { $0 | (Int(buffer[hBase + $1]) << ($1 * 8)) }
                 guard length <= 8 * 1024 * 1024 else { throw ProtocolError.limitExceeded(CWL("视频帧")) }
-                guard buffer.count >= 128 + length else { break }
-                let header = Data(buffer.prefix(128)), body = Data(buffer.dropFirst(128).prefix(length))
-                buffer = Data(buffer.dropFirst(128 + length))
-                switch header.byte(4) {
+                guard buffer.count - cursor >= 128 + length else { break }
+                let header = buffer[hBase..<bBase]
+                let body = buffer[bBase..<(bBase + length)]
+                let type = header[header.startIndex + 4]
+                let consumed = 128 + length
+                switch type {
                 case 0:
                     guard body.count >= 16, counter < UInt64.max else { throw ProtocolError.malformed(CWL("加密视频帧")) }
+                    if dumpedHeaders == 0 { dumpHeader(type, header) }
                     var nonce = Data(count: 4)
                     for shift in stride(from: 0, through: 56, by: 8) { nonce.append(UInt8(truncatingIfNeeded: counter >> shift)) }
                     let box = try ChaChaPoly.SealedBox(nonce: .init(data: nonce), ciphertext: body.dropLast(16), tag: body.suffix(16))
                     let plain = try ChaChaPoly.open(box, using: key, authenticating: header)
-                    counter += 1; result.append(try Self.annexB(plain))
+                    counter += 1
+                    cursor += consumed
+                    result.append(ScreenUnit(data: try Self.annexB(plain), streamTime: accept(streamTimestamp(header))))
                 case 1:
                     // iOS can send a header-only configuration record before the next
                     // real codec configuration. Keep the previous codec and stream open.
-                    guard !body.isEmpty else { continue }
+                    guard !body.isEmpty else { cursor += consumed; continue }
                     let parsed: (VideoCodec, Data)
                     do { parsed = try Self.configuration(body) }
                     catch {
@@ -44,16 +69,71 @@ public final class ScreenStream {
                         let prefix = body.prefix(24).map { String(format: "%02x", $0) }.joined()
                         throw ProtocolError.malformed(CWL("{1}（配置记录 {2} 字节：{3}）", [String(describing: error.localizedDescription), String(describing: body.count), String(describing: prefix)]))
                     }
-                    self.codec = parsed.0; result.append(parsed.1)
-                default: break // Timing/extension records have no picture data.
+                    self.codec = parsed.0
+                    cursor += consumed
+                    result.append(ScreenUnit(data: parsed.1, streamTime: nil))
+                default:
+                    // 时间戳 / 扩展记录本身没有画面，但头里可能带着这场会话的时间基准（P2）。
+                    dumpHeader(type, header)
+                    cursor += consumed
                 }
             }
+            if cursor > 0, cursor == buffer.count || cursor > 1 << 20 || cursor * 2 >= buffer.count {
+                buffer.removeFirst(cursor); cursor = 0
+            }
+            VideoTelemetry.shared.recordDemux((CACurrentMediaTime() - started) * 1000)
             return result
-        } catch { failed = true; buffer = Data(); throw error }
+        } catch {
+            failed = true; buffer = Data(); cursor = 0
+            VideoTelemetry.shared.recordDemux((CACurrentMediaTime() - started) * 1000)
+            throw error
+        }
     }
+
+    // MARK: - 流内时间戳（P2）
+
+    /// 只在前三条记录上打头，用来确认时间戳字段落在哪个偏移；验证失败就完全不影响原有节拍。
+    private func dumpHeader(_ type: UInt8, _ header: Data) {
+        guard dumpedHeaders < 3 else { return }
+        dumpedHeaders += 1
+        let hex = header.prefix(48).map { String(format: "%02x", $0) }.joined(separator: " ")
+        onLog?(CWL("视频记录头 {1}：{2}", [String(describing: type), hex]))
+    }
+
+    /// AirPlay 屏幕流头里通常把时间戳放在偏移 8 或 16，格式是 NTP（32 位秒 + 32 位小数）。
+    private func streamTimestamp(_ header: Data) -> Double? {
+        for offset in [8, 16] {
+            guard header.count >= offset + 8 else { continue }
+            let base = header.startIndex + offset
+            let hi = UInt32(header[base]) << 24 | UInt32(header[base + 1]) << 16
+                | UInt32(header[base + 2]) << 8 | UInt32(header[base + 3])
+            let lo = UInt32(header[base + 4]) << 24 | UInt32(header[base + 5]) << 16
+                | UInt32(header[base + 6]) << 8 | UInt32(header[base + 7])
+            let epoch = Double(hi) - Self.ntpEpoch + Double(lo) / 4_294_967_296
+            // 只接受“像一个真实时钟”的值：在 2023 年之后、且不超过当前时间一天。
+            if epoch > 1_700_000_000, epoch < Date().timeIntervalSince1970 + 86_400 { return epoch }
+        }
+        return nil
+    }
+
+    /// 单调并且间隔合理才认，避免把别的 64 位字段当成时间。
+    private func accept(_ stamp: Double?) -> Double? {
+        guard let stamp else { return nil }
+        if let last = lastStreamTime {
+            let delta = stamp - last
+            guard delta > 0.001, delta < 1 else { return nil }
+        }
+        lastStreamTime = stamp
+        if !reportedTimestamp {
+            reportedTimestamp = true
+            onLog?(CWL("视频流内时间戳可用，当前 {1}", [String(format: "%.3f", stamp)]))
+        }
+        return stamp
+    }
+
     private static func annexB(_ data: Data) throws -> Data {
         // H264Surface validates and splits the access unit. Avoid a second full
-        // Annex-B pass here on the receiver's serial queue for every frame.
+        // Annex-B pass here on the demux queue for every frame.
         if data.starts(with: [0, 0, 0, 1]) { return data }
         var offset = 0, output = Data()
         while offset < data.count {

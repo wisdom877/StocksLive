@@ -48,6 +48,11 @@ final class H264Surface: UIView {
     private var statFlushes = 0
     private var statWindowStart = ProcessInfo.processInfo.systemUptime
     private var statWindowFrames = 0
+    private var statWindowBytes = 0
+    private var statGaps: [Double] = []
+    private var lastArrival: TimeInterval?
+    private var lastStreamTime: Double?
+    private var reportedStreamPTS = false
     private var statKeyWaitStart: TimeInterval?
     private var statKeyWaitMs = 0
     private var rendererNeedsRecovery: Bool { display.requiresFlushToResumeDecoding || display.status == .failed }
@@ -98,6 +103,7 @@ final class H264Surface: UIView {
         hasEnqueuedFrame = false
         checkingDisplaySince = nil
         nextStamp = nil
+        lastStreamTime = nil
         statKeyWaitStart = ProcessInfo.processInfo.systemUptime
         lastRecovery = ProcessInfo.processInfo.systemUptime
         if !awaitingKeyframe { onLog?(CWL("视频渲染器将在下一个关键帧恢复：{1}", [String(describing: reason)])) }
@@ -142,6 +148,7 @@ final class H264Surface: UIView {
             self.pending.removeAll(); self.pendingBytes = 0; self.pendingSince = nil
             self.awaitingKeyframe = false; self.awaitingKeyframeMirror = false
             self.nextStamp = nil
+            self.lastStreamTime = nil
             self.display.flushAndRemoveImage(); self.format = nil; self.parameters = nil; self.hasEnqueuedFrame = false
             self.firstFramePublished = false
             DispatchQueue.main.async { [weak self] in
@@ -173,16 +180,16 @@ final class H264Surface: UIView {
         return description
     }
 
-    func enqueue(accessUnit: Data, codec: VideoCodec) throws {
+    func enqueue(accessUnit: Data, codec: VideoCodec, streamTime: Double? = nil) throws {
         videoQueue.async { [weak self] in
             guard let self else { return }
-            do { try self.ingest(accessUnit: accessUnit, codec: codec) }
+            do { try self.ingest(accessUnit: accessUnit, codec: codec, streamTime: streamTime) }
             catch { self.onLog?(CWL("视频帧解析失败：{1}", [String(describing: error.localizedDescription)])) }
         }
     }
 
     /// 真正的解析与入队，只在 `videoQueue` 上执行。
-    private func ingest(accessUnit: Data, codec: VideoCodec) throws {
+    private func ingest(accessUnit: Data, codec: VideoCodec, streamTime: Double?) throws {
         guard !suspended else { return }
         let startedAt = CACurrentMediaTime()
         // While waiting for an IDR, discard P-frames before splitting them: a full
@@ -260,9 +267,22 @@ final class H264Surface: UIView {
         var sample: CMSampleBuffer?
         var size = bytes.count
         // 时间戳以“到达时间 + 有界前瞻”生成：任何一帧都不允许比现在超前超过
-        // 150ms。这样即使流是 60fps 而声明 30fps，也不会每秒攒出一秒的账（P0-1）。
-        let interval = CMTime(seconds: 1.0 / max(frameRate, 1), preferredTimescale: 1_000_000)
-        let lead = CMTime(seconds: 0.05, preferredTimescale: 1_000_000)
+        // 150ms。流内时间戳可用时按真实帧间隔推进，并把前瞻收窄到一帧（P2）。
+        var streamDelta: Double?
+        if let t = streamTime {
+            if let last = lastStreamTime {
+                let delta = t - last
+                if delta > 0.001, delta < 0.5 { streamDelta = delta }
+            }
+            lastStreamTime = t
+            if !reportedStreamPTS {
+                reportedStreamPTS = true
+                let detail = streamDelta.map { String(format: "间隔 %.1f ms", $0 * 1000) } ?? CWL("首帧")
+                onLog?(CWL("视频节拍改用流内时间戳：{1}", [detail]))
+            }
+        }
+        let interval = CMTime(seconds: streamDelta ?? (1.0 / max(frameRate, 1)), preferredTimescale: 1_000_000)
+        let lead = CMTime(seconds: streamDelta == nil ? 0.05 : 0.02, preferredTimescale: 1_000_000)
         let maxLead = CMTime(seconds: 0.15, preferredTimescale: 1_000_000)
         let hostNow = CMClockGetTime(CMClockGetHostTimeClock())
         var stamp = CMTimeAdd(hostNow, lead)
@@ -282,7 +302,15 @@ final class H264Surface: UIView {
         guard status == noErr, let sample else { throw ProtocolError.malformed(CWL("无法创建视频帧")) }
         if pending.isEmpty { pendingSince = now }
         pending.append((sample, bytes.count)); pendingBytes += bytes.count
-        statFrames += 1; statWindowFrames += 1
+        statFrames += 1; statWindowFrames += 1; statWindowBytes += accessUnit.count
+        if let last = lastArrival {
+            let gap = (now - last) * 1000
+            if gap > 0, gap < 2_000 {
+                statGaps.append(gap)
+                if statGaps.count > 180 { statGaps.removeFirst() }
+            }
+        }
+        lastArrival = now
         // Retain dependent compressed frames until the decoder is ready. Dropping
         // an arbitrary P-frame corrupts every dependent frame up to the next IDR.
         if !requesting {
@@ -330,17 +358,24 @@ final class H264Surface: UIView {
         }
     }
 
-    /// 每秒一行的运行状态，供 CarPlay 页显示与验收（P0-4）。
+    /// 每秒一行的运行状态，供 CarPlay 页显示与验收（P0-4 / P1-1）。
     func statsLine() -> String {
         let uptime = ProcessInfo.processInfo.systemUptime
-        let snapshot = videoQueue.sync { () -> (Double, Int, Int, Int, Int, Int) in
+        let demux = VideoTelemetry.shared.demuxP95()
+        let snapshot = videoQueue.sync { () -> (Double, Int, Int, Int, Int, Double, Double, Double) in
             let window = max(uptime - statWindowStart, 0.001)
             let fps = Double(statWindowFrames) / window
-            statWindowStart = uptime; statWindowFrames = 0
-            return (fps, statFrames, statSkips, statFlushes, pending.count, statKeyWaitMs)
+            var gaps = statGaps; gaps.sort()
+            let p95 = gaps.isEmpty ? 0 : gaps[Int(Double(gaps.count - 1) * 0.95)]
+            let maxGap = gaps.last ?? 0
+            let mbit = Double(statWindowBytes) * 8 / window / 1_000_000
+            statWindowStart = uptime; statWindowFrames = 0; statWindowBytes = 0
+            statGaps.removeAll(keepingCapacity: true)
+            return (fps, statSkips, statFlushes, pending.count, statKeyWaitMs, p95, maxGap, mbit)
         }
-        return String(format: "视频 %.0f fps · 累计 %d 帧 · 丢 %d · 恢复 %d · 待显示 %d · 关键帧等待 %d ms",
-                      snapshot.0, snapshot.1, snapshot.2, snapshot.3, snapshot.4, snapshot.5)
+        return String(format: "视频 %.0f fps · 丢 %d · 恢复 %d · 待显示 %d · 关键帧 %d ms · 间隔 %.0f/%.0f ms · %.1f Mbps · 解析 %.1f ms",
+                      snapshot.0, snapshot.1, snapshot.2, snapshot.3, snapshot.4,
+                      snapshot.5, snapshot.6, snapshot.7, demux.p95)
     }
 
     // Each UITouch keeps a small id from touchesBegan to touchesEnded, so a finger keeps its HID slot.

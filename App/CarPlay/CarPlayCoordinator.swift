@@ -258,10 +258,10 @@ final class CarPlayCoordinator: NSObject {
         }
         receiver.onVideoClosed = { [weak self] in self?.videoDidClose("视频通道已关闭") }
         receiver.onVideoStalled = { [weak self] reason in self?.videoDidClose(reason) }
-        receiver.onVideo = { [weak self] data, codec in
+        receiver.onVideo = { [weak self] data, codec, streamTime in
             guard let self, self.active else { return }
             do {
-                try self.stage.surface.enqueue(accessUnit: data, codec: codec)
+                try self.stage.surface.enqueue(accessUnit: data, codec: codec, streamTime: streamTime)
                 self.lastVideoAt = CACurrentMediaTime()
                 if !self.displayedVideo {
                     self.displayedVideo = true
