@@ -450,7 +450,10 @@ final class CarPlayCoordinator: NSObject {
         // 卡片跟着真实画面宽高比走：16:9 只是没拿到像素尺寸之前的默认值。
         // 车机常见 19.5:9 / 21:9，硬塞进 16:9 就会在左右各留一条黑边。
         let pixels = stage.surface.pictureSize
-        let aspect: CGFloat = (pixels.width > 1 && pixels.height > 1) ? pixels.width / pixels.height : 16.0 / 9.0
+        let aspectKnown = pixels.width > 1 && pixels.height > 1
+        let aspect: CGFloat = aspectKnown ? pixels.width / pixels.height : 16.0 / 9.0
+        // 卡片按真实比例排好后让画面直接铺满，免得涂层自己又等比内缩出细黑边。
+        stage.surface.matchCard(aspectKnown: aspectKnown)
         var height = short
         var width = height * aspect
         if width > max(bounds.width, bounds.height) {

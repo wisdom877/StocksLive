@@ -46,6 +46,14 @@ final class H264Surface: UIView {
     /// 主线程只读取的视频像素尺寸：外层用它把原生卡片收成画面本身的宽高比，
     /// 这样 19.5:9 / 21:9 的车机画面不会再被 16:9 的卡框硬塞出左右黑边。
     var pictureSize: CGSize { videoSize }
+    /// 卡片尺寸本来就是按上面这个像素宽高比排的，此时用 .resize 直接铺满最干净：
+    /// .resizeAspect 会再按 layer 的整数点尺寸算一次等比内缩，四舍五入后仍可能
+    /// 在边上留出 1pt 的黑缝，淡色背景上看着就是一圈细黑边。
+    /// 拿不到像素尺寸（还在等首帧）时退回 .resizeAspect，避免把画面拉变形。
+    func matchCard(aspectKnown: Bool) {
+        let want: AVLayerVideoGravity = aspectKnown ? .resize : .resizeAspect
+        if display.videoGravity != want { display.videoGravity = want }
+    }
     private var statFrames = 0
     private var statSkips = 0
     private var statFlushes = 0
