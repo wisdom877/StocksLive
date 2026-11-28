@@ -49,6 +49,11 @@ final class CarPlayCoordinator: NSObject {
     private var railAllowed = false
     private var covered = false
     private var flip = false
+    /// 原生画面在屏幕正中时的位置：拖动时只改 center.x，旋转矩阵保持不动。
+    private var stageRestCenter = CGPoint.zero
+    private var stageGrab = false
+    private var stageSettling = false
+    private var stageDragOffset: CGFloat = 0
     private var orientationObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
     private var heartObserver: NSObjectProtocol?
@@ -129,10 +134,45 @@ final class CarPlayCoordinator: NSObject {
         case "overlay":
             // 网页要压一层整屏设置：先把原生视频层与心率栏收走，关掉设置再放回来。
             covered = (body["covered"] as? Int ?? 0) != 0
+            if !covered {
+                stageDragOffset = 0
+                stage.center = stageRestCenter
+            }
             stage.isHidden = covered || !displayedVideo
             closeButton.isHidden = true
             syncHeartRailVisibility(animated: covered)
             relayout()
+        case "stageGrab":
+            // 手指刚落下：原生画面立刻转为跟手，后面按网页给的位移逐帧跟随。
+            guard displayedVideo else { break }
+            stageGrab = true
+            stageSettling = false
+            stageDragOffset = CGFloat(body["x"] as? Double ?? 0)
+            stage.isHidden = false
+            stage.center = CGPoint(x: stageRestCenter.x + stageDragOffset, y: stageRestCenter.y)
+        case "stageMove":
+            guard stageGrab else { break }
+            stageDragOffset = CGFloat(body["x"] as? Double ?? 0)
+            stage.center = CGPoint(x: stageRestCenter.x + stageDragOffset, y: stageRestCenter.y)
+        case "stageSettle":
+            // 松手：用和网页翻页同一条曲线补完剩下的距离，滑出后自己收起，不再瞬间消失。
+            guard stageGrab else { break }
+            stageGrab = false
+            stageSettling = true
+            let target = CGFloat(body["x"] as? Double ?? 0)
+            let out = (body["out"] as? Int ?? 0) != 0
+            let dur = max(0.15, min(0.42, Double(body["dur"] as? Double ?? 240) / 1000))
+            stageDragOffset = target
+            UIView.animate(withDuration: dur, delay: 0, options: [.curveEaseOut]) {
+                self.stage.center = CGPoint(x: self.stageRestCenter.x + target, y: self.stageRestCenter.y)
+            } completion: { _ in
+                self.covered = out
+                self.stageSettling = false
+                self.stageDragOffset = 0
+                self.stage.isHidden = out
+                self.stage.center = self.stageRestCenter
+                self.syncHeartRailVisibility(animated: out)
+            }
         default:
             break
         }
@@ -246,6 +286,9 @@ final class CarPlayCoordinator: NSObject {
         host.view.addSubview(heartRail)
         host.view.addSubview(closeButton)
         relayout()
+        // 能力位：网页据此决定用「原生跟手滑出」还是退回一把收起的旧路径。
+        // 旧壳不认识这三条消息，网页也就不能盲目依赖它们。
+        push(state: "caps", message: "stage")
         push(state: "starting", message: "正在创建本机配件端点…")
 
         receiver.onLog = { [weak self] line in self?.log(line) }
@@ -407,7 +450,10 @@ final class CarPlayCoordinator: NSObject {
         default: rotation = flip ? .pi : 0
         }
         stage.bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        stage.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let rest = CGPoint(x: bounds.midX, y: bounds.midY)
+        stageRestCenter = rest
+        // 跟手 / 补完动画期间不要改 center，否则会把拖动或滑出动画拽回正中。
+        if !stageGrab && !stageSettling { stage.center = rest }
         stage.transform = CGAffineTransform(rotationAngle: rotation)
         // 左上设置键 28×56，位置 16/56；多留一点手指容差，避免边缘点不中。
         stage.passthroughRect = stage.convert(CGRect(x: 8, y: 46, width: 56, height: 84), from: host.view)
