@@ -206,6 +206,31 @@ final class CarPlayCoordinator: NSObject {
             restartCurrent()
         case "stop":
             stop(reason: nil)
+        case "cpLink":
+            // 设置页「连接信息」保存：SSID / 密码 / iPad 地址端口，改完不用重装也不用重走连接 sheet。
+            let linkSSID = (body["ssid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let linkPassword = body["password"] as? String ?? ""
+            if !linkSSID.isEmpty {
+                lastSSID = linkSSID
+                UserDefaults.standard.set(linkSSID, forKey: Self.ssidKey)
+                if !linkPassword.isEmpty { try? WiFiCredentials.save(linkPassword, for: linkSSID) }
+            }
+            if let target = parseRemoteTarget(body) {
+                remoteTarget = target
+                if let name = body["targetName"] as? String, !name.isEmpty { remoteTargetName = name }
+            }
+            log("连接信息已更新：SSID=\(linkSSID.isEmpty ? "-" : linkSSID)，目标=\(remoteTarget.map { "\($0.host):\($0.port)" } ?? "-")")
+            push(state: "link", message: "连接信息已保存", extra: linkExtra())
+        case "cpLinkInfo":
+            push(state: "link", message: "当前连接信息", extra: linkExtra())
+        case "cpLinkClear":
+            // 只清连接信息，不动正在跑的会话；下次长按会重新弹填写框。
+            if let ssid = lastSSID { try? WiFiCredentials.forget(ssid) }
+            UserDefaults.standard.removeObject(forKey: Self.ssidKey)
+            lastSSID = nil
+            remoteTarget = nil
+            log("连接信息已清除")
+            push(state: "link", message: "连接信息已清除", extra: linkExtra())
         case "forget":
             if let ssid = lastSSID { try? WiFiCredentials.forget(ssid) }
             UserDefaults.standard.removeObject(forKey: Self.ssidKey)
@@ -382,6 +407,15 @@ final class CarPlayCoordinator: NSObject {
         config.port = port
         config.name = name
         return config
+    }
+
+    private func linkExtra() -> [String: Any] {
+        var extra: [String: Any] = ["ssid": lastSSID ?? ""]
+        if let target = remoteTarget {
+            extra["host"] = target.host
+            extra["port"] = Int(target.port)
+        }
+        return extra
     }
 
     private func parseRemoteTarget(_ body: [String: Any]) -> (host: String, port: UInt16)? {
