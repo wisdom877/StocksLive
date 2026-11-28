@@ -330,6 +330,8 @@ final class CarPlayCoordinator: NSObject {
         guard active, !covered, !recovering else { return }
         let now = CACurrentMediaTime()
         if displayedVideo {
+            // 每秒一行运行状态：既是验收口径，也替代必须连 Xcode 看 Console 的现状。
+            push(state: "stats", message: stage.surface.statsLine())
             guard now - lastVideoAt > 8 else { return }
             requestRecovery("8 秒没有新画面")
         } else if now - videoStartAt > 20 {

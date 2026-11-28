@@ -15,8 +15,11 @@ final class CarPlayReceiver {
     /// Access units handed to the main thread but not yet consumed. Over the limit, the local
     /// display skips to the next keyframe instead of dropping arbitrary (dependent) P-frames.
     private var localInFlight = 0
+    private var localInFlightSince: DispatchTime?
     private var localSkipping = false
     private let maximumLocalInFlight = 12
+    /// 主线程滞后超过这个毫秒数才认为“积压”。按时间判定，30/60fps 含义一致。
+    private let localLagLimitMs = 150
     private var localVideoEnabled = true
 
     // forceKeyFrame state: throttled sends, resent every second until a keyframe arrives.
@@ -175,6 +178,12 @@ final class CarPlayReceiver {
         }
     }
 
+    /// Milliseconds since the oldest in-flight access unit was handed to the display.
+    private func localLagMs() -> Int {
+        guard let since = localInFlightSince else { return 0 }
+        return Int((DispatchTime.now().uptimeNanoseconds - since.uptimeNanoseconds) / 1_000_000)
+    }
+
     /// Thread-safe entry for the display layer when it needs a fresh keyframe.
     func requestKeyFrame(reason: String) {
         queue.async { [weak self] in self?.requestKeyFrameOnQueue(reason: reason) }
@@ -186,8 +195,9 @@ final class CarPlayReceiver {
             keyframeWantedSince = now; keyframeAttempts = 0; keyframeReason = reason
             armKeyframeWatchdog()
         }
-        // 250 ms throttle: several recovery paths share one request.
-        if let last = keyframeLastSent, now.uptimeNanoseconds - last.uptimeNanoseconds < 250_000_000 { return }
+        // 400 ms throttle: several recovery paths share one request, so a burst of
+        // recover() calls cannot ask for repeated IDRs and spike the bitrate.
+        if let last = keyframeLastSent, now.uptimeNanoseconds - last.uptimeNanoseconds < 400_000_000 { return }
         sendKeyFrameRequest()
     }
 
@@ -198,7 +208,7 @@ final class CarPlayReceiver {
         keyframeLastSent = .now()
         guard media.requestKeyFrame() else { return }
         if keyframeAttempts == 1 { log("已请求关键帧（\(keyframeReason)）") }
-        guard keyframeAttempts < 8 else {
+        guard keyframeAttempts < 4 else {
             log("iPhone 未响应关键帧请求（已重试 \(keyframeAttempts) 次），准备重启接收端")
             keyframeWantedSince = nil
             keyframeWatchdog?.cancel(); keyframeWatchdog = nil
@@ -342,16 +352,19 @@ final class CarPlayReceiver {
                     if self.localSkipping {
                         guard keyframe, self.localInFlight < self.maximumLocalInFlight / 2 else { return }
                         self.localSkipping = false
-                    } else if self.localInFlight >= self.maximumLocalInFlight, !keyframe {
+                    } else if !keyframe, self.localLagMs() > self.localLagLimitMs {
                         self.localSkipping = true
                         self.requestKeyFrameOnQueue(reason: "本机显示积压")
                         return
                     }
+                    if self.localInFlight == 0 { self.localInFlightSince = .now() }
                     self.localInFlight += 1
                     DispatchQueue.main.async { [weak self] in
                         self?.onVideo?(data, codec)
                         self?.queue.async { [weak self] in
-                            if let self { self.localInFlight = max(0, self.localInFlight - 1) }
+                            guard let self else { return }
+                            self.localInFlight = max(0, self.localInFlight - 1)
+                            if self.localInFlight == 0 { self.localInFlightSince = nil }
                         }
                     }
                 }

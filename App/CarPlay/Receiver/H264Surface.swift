@@ -7,9 +7,9 @@ final class H264Surface: UIView {
     private var display: AVSampleBufferDisplayLayer { layer as! AVSampleBufferDisplayLayer }
     var pictureInPictureLayer: AVSampleBufferDisplayLayer { display }
     var isReadyForPictureInPicture: Bool {
-        guard format != nil, !awaitingKeyframe, !rendererNeedsRecovery, window != nil, !isHidden, !bounds.isEmpty else { return false }
+        guard videoSize != .zero, !awaitingKeyframeMirror, !isHidden, window != nil, !bounds.isEmpty else { return false }
         if #available(iOS 17.4, *) { return display.isReadyForDisplay }
-        return hasEnqueuedFrame
+        return hasPublishedFrame
     }
     lazy var touchOwnershipGestureRecognizer: UILongPressGestureRecognizer = {
         let gesture = UILongPressGestureRecognizer(target: self, action: #selector(holdTouchOwnership(_:)))
@@ -19,20 +19,37 @@ final class H264Surface: UIView {
         return gesture
     }()
 
+    // 解析、切分、拷贝、入队全部在这条串行队列上完成，主线程不再参与（P0-3）。
+    private let videoQueue = DispatchQueue(label: "com.stocks.carplay.video", qos: .userInteractive)
     private var format: CMVideoFormatDescription?
     private var parameters: VideoParameterSets?
     private var pending: [(CMSampleBuffer, Int)] = []
     private var pendingBytes = 0
-    /// Target cadence for the presentation timestamps handed to the display layer.
+    private var pendingSince: TimeInterval?
+    /// Target cadence used only as the step between consecutive frames. Set on the main
+    /// thread before the stream starts and never mutated afterwards.
     var frameRate: Double = 30
-    private var nextPresentationTime: CMTime?
+    private var nextStamp: CMTime?
     private var lastSlowLogAt: CFTimeInterval = 0
     private var requesting = false
     private var hasEnqueuedFrame = false
+    private var firstFramePublished = false
+    /// 主线程镜像：是否已经有帧进入显示层。
+    private var hasPublishedFrame = false
     private var awaitingKeyframe = false
+    private var awaitingKeyframeMirror = false
     private var suspended = false
     private var lastRecovery = -Double.infinity
     private var checkingDisplaySince: TimeInterval?
+    /// 主线程镜像：视频像素尺寸，仅用于触控归一化与 PiP 就绪判断。
+    private var videoSize: CGSize = .zero
+    private var statFrames = 0
+    private var statSkips = 0
+    private var statFlushes = 0
+    private var statWindowStart = ProcessInfo.processInfo.systemUptime
+    private var statWindowFrames = 0
+    private var statKeyWaitStart: TimeInterval?
+    private var statKeyWaitMs = 0
     private var rendererNeedsRecovery: Bool { display.requiresFlushToResumeDecoding || display.status == .failed }
     var onLog: ((String) -> Void)?
     /// Every finger currently on the surface, normalized to the video picture (0…1).
@@ -54,33 +71,38 @@ final class H264Surface: UIView {
     }
 
     @objc private func decodeFailed(_ note: Notification) {
-        DispatchQueue.main.async { [weak self] in
+        let error = note.userInfo?[AVSampleBufferDisplayLayerFailedToDecodeNotificationErrorKey] as? NSError
+        let detail = String(describing: error.map { "（\($0.code)）" } ?? "")
+        videoQueue.async { [weak self] in
             guard let self, !self.suspended, self.format != nil, self.rendererNeedsRecovery,
                   ProcessInfo.processInfo.systemUptime - self.lastRecovery >= 0.5 else { return }
-            let error = note.userInfo?[AVSampleBufferDisplayLayerFailedToDecodeNotificationErrorKey] as? NSError
-            self.recover(reason: CWL("本机解码失败{1}", [String(describing: error.map { "（\($0.code)）" } ?? "")]))
+            self.recover(reason: CWL("本机解码失败{1}", [detail]))
         }
     }
 
     @objc private func rendererFlushChanged() {
-        DispatchQueue.main.async { [weak self] in
+        videoQueue.async { [weak self] in
             guard let self, !self.suspended, self.format != nil, self.display.requiresFlushToResumeDecoding,
                   ProcessInfo.processInfo.systemUptime - self.lastRecovery >= 0.5 else { return }
             self.recover(reason: CWL("系统要求恢复视频解码"))
         }
     }
 
+    /// Must run on `videoQueue`.
     private func recover(reason: String) {
         guard !suspended else { return }
+        statFlushes += 1
         display.stopRequestingMediaData(); requesting = false
-        pending.removeAll(); pendingBytes = 0
+        pending.removeAll(); pendingBytes = 0; pendingSince = nil
         display.flush()
         hasEnqueuedFrame = false
         checkingDisplaySince = nil
-        nextPresentationTime = nil
+        nextStamp = nil
+        statKeyWaitStart = ProcessInfo.processInfo.systemUptime
         lastRecovery = ProcessInfo.processInfo.systemUptime
         if !awaitingKeyframe { onLog?(CWL("视频渲染器将在下一个关键帧恢复：{1}", [String(describing: reason)])) }
         awaitingKeyframe = true
+        awaitingKeyframeMirror = true
         onKeyframeNeeded?(reason)
     }
 
@@ -93,28 +115,40 @@ final class H264Surface: UIView {
 
     /// Frames were skipped while the app was in the background: start again at a fresh keyframe.
     func resumeAfterBackground(skippedFrames: Bool) {
-        suspended = false
-        nextPresentationTime = nil
-        guard format != nil else { return }
-        if skippedFrames || rendererNeedsRecovery {
-            recover(reason: CWL("回到前台"))
-        } else if awaitingKeyframe {
-            onKeyframeNeeded?(CWL("回到前台等待关键帧"))
-        }
-        if #available(iOS 17.4, *), !display.isReadyForDisplay {
-            checkingDisplaySince = ProcessInfo.processInfo.systemUptime
-            onKeyframeNeeded?(CWL("回到前台等待显示"))
+        videoQueue.async { [weak self] in
+            guard let self else { return }
+            self.suspended = false
+            self.nextStamp = nil
+            guard self.format != nil else { return }
+            if skippedFrames || self.rendererNeedsRecovery {
+                self.recover(reason: CWL("回到前台"))
+            } else if self.awaitingKeyframe {
+                self.onKeyframeNeeded?(CWL("回到前台等待关键帧"))
+            }
+            if #available(iOS 17.4, *), !self.display.isReadyForDisplay {
+                self.checkingDisplaySince = ProcessInfo.processInfo.systemUptime
+                self.onKeyframeNeeded?(CWL("回到前台等待显示"))
+            }
         }
     }
 
     func reset() {
-        suspended = false
-        checkingDisplaySince = nil; lastRecovery = -.infinity
-        releaseAllTouches()
-        display.stopRequestingMediaData(); requesting = false
-        pending.removeAll(); pendingBytes = 0; awaitingKeyframe = false
-        nextPresentationTime = nil
-        display.flushAndRemoveImage(); format = nil; parameters = nil; hasEnqueuedFrame = false
+        DispatchQueue.main.async { [weak self] in self?.releaseAllTouches() }
+        videoQueue.async { [weak self] in
+            guard let self else { return }
+            self.suspended = false
+            self.checkingDisplaySince = nil; self.lastRecovery = -.infinity
+            self.display.stopRequestingMediaData(); self.requesting = false
+            self.pending.removeAll(); self.pendingBytes = 0; self.pendingSince = nil
+            self.awaitingKeyframe = false; self.awaitingKeyframeMirror = false
+            self.nextStamp = nil
+            self.display.flushAndRemoveImage(); self.format = nil; self.parameters = nil; self.hasEnqueuedFrame = false
+            self.firstFramePublished = false
+            DispatchQueue.main.async { [weak self] in
+                self?.videoSize = .zero
+                self?.hasPublishedFrame = false
+            }
+        }
     }
 
     private func makeFormat(_ sets: VideoParameterSets) throws -> CMVideoFormatDescription {
@@ -140,12 +174,23 @@ final class H264Surface: UIView {
     }
 
     func enqueue(accessUnit: Data, codec: VideoCodec) throws {
-        dispatchPrecondition(condition: .onQueue(.main))
+        videoQueue.async { [weak self] in
+            guard let self else { return }
+            do { try self.ingest(accessUnit: accessUnit, codec: codec) }
+            catch { self.onLog?(CWL("视频帧解析失败：{1}", [String(describing: error.localizedDescription)])) }
+        }
+    }
+
+    /// 真正的解析与入队，只在 `videoQueue` 上执行。
+    private func ingest(accessUnit: Data, codec: VideoCodec) throws {
         guard !suspended else { return }
         let startedAt = CACurrentMediaTime()
-        // While waiting for an IDR, discard P-frames before splitting them. A full
-        // Annex-B pass on every skipped frame was the largest avoidable main-thread cost.
-        if awaitingKeyframe, !AnnexB.containsRandomAccess(accessUnit, codec: codec) { return }
+        // While waiting for an IDR, discard P-frames before splitting them: a full
+        // Annex-B pass on every skipped frame is the largest avoidable cost.
+        if awaitingKeyframe, !AnnexB.containsRandomAccess(accessUnit, codec: codec) {
+            statSkips += 1
+            return
+        }
         let units = try AnnexB.units(in: accessUnit)
         if parameters?.codec != codec { parameters = VideoParameterSets(codec: codec); format = nil }
         var picture: [Data] = []
@@ -157,15 +202,22 @@ final class H264Surface: UIView {
         if changed || format == nil, let sets = parameters, sets.isComplete {
             let newFormat = try makeFormat(sets)
             display.stopRequestingMediaData(); requesting = false
-            pending.removeAll(); pendingBytes = 0
-            nextPresentationTime = nil
+            pending.removeAll(); pendingBytes = 0; pendingSince = nil
+            nextStamp = nil
             display.flush(); format = newFormat
+            let dimensions = CMVideoFormatDescriptionGetDimensions(newFormat)
+            let pixelSize = CGSize(width: CGFloat(dimensions.width), height: CGFloat(dimensions.height))
+            DispatchQueue.main.async { [weak self] in self?.videoSize = pixelSize }
             onLog?(CWL("本机显示层使用 {1}", [String(describing: codec.displayName)]))
         }
         guard !picture.isEmpty else { return }
         guard let format else {
             // Parameter sets were lost (e.g. after a reset); only a new IDR carries them again.
-            if !awaitingKeyframe { awaitingKeyframe = true; onKeyframeNeeded?(CWL("缺少参数集")) }
+            if !awaitingKeyframe {
+                awaitingKeyframe = true; awaitingKeyframeMirror = true
+                statKeyWaitStart = ProcessInfo.processInfo.systemUptime
+                onKeyframeNeeded?(CWL("缺少参数集"))
+            }
             return
         }
         let keyframe = picture.contains { codec.isRandomAccess($0) }
@@ -175,8 +227,10 @@ final class H264Surface: UIView {
             guard now - lastRecovery >= 0.5 else { return }
             recover(reason: CWL("显示层需要恢复：{1}", [String(describing: display.error?.localizedDescription ?? CWL("系统状态变化"))]))
             guard !rendererNeedsRecovery else { return }
-        } else if pending.count >= 30 || pendingBytes > 16 * 1024 * 1024 {
-            recover(reason: CWL("显示积压 {1} 帧", [String(describing: pending.count)]))
+        } else if pendingBytes > 16 * 1024 * 1024 || pendingAge(now) > 1.2 {
+            // 按时间而不是按帧数判断积压：30fps 与 60fps 下同一阈值含义一致（P0-2）。
+            recover(reason: CWL("显示积压 {1} 帧 / {2} ms",
+                [String(describing: pending.count), String(format: "%.0f", pendingAge(now) * 1000)]))
         } else if #available(iOS 17.4, *) {
             if display.isReadyForDisplay {
                 checkingDisplaySince = nil
@@ -189,8 +243,11 @@ final class H264Surface: UIView {
             }
         }
         if awaitingKeyframe {
-            guard keyframe else { return }
+            guard keyframe else { statSkips += 1; return }
             awaitingKeyframe = false
+            awaitingKeyframeMirror = false
+            if let since = statKeyWaitStart { statKeyWaitMs = Int((now - since) * 1000) }
+            statKeyWaitStart = nil
         }
         let bytes = try AnnexB.lengthPrefixed(picture)
         var block: CMBlockBuffer?
@@ -202,45 +259,58 @@ final class H264Surface: UIView {
         guard status == noErr else { throw ProtocolError.malformed(CWL("无法写入视频缓冲区")) }
         var sample: CMSampleBuffer?
         var size = bytes.count
-        // CarPlay is a live stream, but the display layer still needs a monotonic
-        // presentation clock. Without this, a burst of network frames is painted all
-        // at once and the next pause looks like a freeze. Keep the first frame due now
-        // and each following frame one cadence later, never in the past.
+        // 时间戳以“到达时间 + 有界前瞻”生成：任何一帧都不允许比现在超前超过
+        // 150ms。这样即使流是 60fps 而声明 30fps，也不会每秒攒出一秒的账（P0-1）。
         let interval = CMTime(seconds: 1.0 / max(frameRate, 1), preferredTimescale: 1_000_000)
+        let lead = CMTime(seconds: 0.05, preferredTimescale: 1_000_000)
+        let maxLead = CMTime(seconds: 0.15, preferredTimescale: 1_000_000)
         let hostNow = CMClockGetTime(CMClockGetHostTimeClock())
-        var stamp = hostNow
-        if let next = nextPresentationTime {
+        var stamp = CMTimeAdd(hostNow, lead)
+        if let next = nextStamp {
             let candidate = CMTimeAdd(next, interval)
-            if CMTimeCompare(candidate, hostNow) >= 0 { stamp = candidate }
+            if CMTimeCompare(candidate, stamp) > 0 { stamp = candidate }
         }
-        nextPresentationTime = CMTimeAdd(stamp, interval)
+        if CMTimeCompare(CMTimeSubtract(stamp, hostNow), maxLead) > 0 {
+            stamp = CMTimeAdd(hostNow, maxLead)
+        }
+        nextStamp = stamp
         var timing = CMSampleTimingInfo(duration: interval,
             presentationTimeStamp: stamp, decodeTimeStamp: .invalid)
         status = CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format,
             sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
             sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sample)
         guard status == noErr, let sample else { throw ProtocolError.malformed(CWL("无法创建视频帧")) }
+        if pending.isEmpty { pendingSince = now }
         pending.append((sample, bytes.count)); pendingBytes += bytes.count
+        statFrames += 1; statWindowFrames += 1
         // Retain dependent compressed frames until the decoder is ready. Dropping
         // an arbitrary P-frame corrupts every dependent frame up to the next IDR.
         if !requesting {
             requesting = true
-            display.requestMediaDataWhenReady(on: .main) { [weak self] in self?.drain() }
+            display.requestMediaDataWhenReady(on: videoQueue) { [weak self] in self?.drain() }
         }
         let cost = CACurrentMediaTime() - startedAt
         if cost >= 0.008, CACurrentMediaTime() - lastSlowLogAt >= 1 {
             lastSlowLogAt = CACurrentMediaTime()
-            onLog?(CWL("视频帧主线程耗时 {1} ms（待显示 {2} 帧）",
+            onLog?(CWL("视频帧解析耗时 {1} ms（待显示 {2} 帧）",
                 [String(format: "%.1f", cost * 1000), String(describing: pending.count)]))
         }
     }
 
+    private func pendingAge(_ now: TimeInterval) -> TimeInterval {
+        guard let since = pendingSince else { return 0 }
+        return now - since
+    }
+
     func suspendForExternalOutput() {
-        suspended = true
-        display.stopRequestingMediaData(); requesting = false
-        pending.removeAll(); pendingBytes = 0
-        nextPresentationTime = nil
-        display.flush()
+        videoQueue.async { [weak self] in
+            guard let self else { return }
+            self.suspended = true
+            self.display.stopRequestingMediaData(); self.requesting = false
+            self.pending.removeAll(); self.pendingBytes = 0; self.pendingSince = nil
+            self.nextStamp = nil
+            self.display.flush()
+        }
     }
 
     private func drain() {
@@ -249,10 +319,28 @@ final class H264Surface: UIView {
             let (sample, bytes) = pending.removeFirst(); pendingBytes -= bytes
             display.enqueue(sample)
             hasEnqueuedFrame = true
+            if !firstFramePublished {
+                firstFramePublished = true
+                DispatchQueue.main.async { [weak self] in self?.hasPublishedFrame = true }
+            }
         }
         if pending.isEmpty {
+            pendingSince = nil
             display.stopRequestingMediaData(); requesting = false
         }
+    }
+
+    /// 每秒一行的运行状态，供 CarPlay 页显示与验收（P0-4）。
+    func statsLine() -> String {
+        let uptime = ProcessInfo.processInfo.systemUptime
+        let snapshot = videoQueue.sync { () -> (Double, Int, Int, Int, Int, Int) in
+            let window = max(uptime - statWindowStart, 0.001)
+            let fps = Double(statWindowFrames) / window
+            statWindowStart = uptime; statWindowFrames = 0
+            return (fps, statFrames, statSkips, statFlushes, pending.count, statKeyWaitMs)
+        }
+        return String(format: "视频 %.0f fps · 累计 %d 帧 · 丢 %d · 恢复 %d · 待显示 %d · 关键帧等待 %d ms",
+                      snapshot.0, snapshot.1, snapshot.2, snapshot.3, snapshot.4, snapshot.5)
     }
 
     // Each UITouch keeps a small id from touchesBegan to touchesEnded, so a finger keeps its HID slot.
@@ -260,9 +348,8 @@ final class H264Surface: UIView {
     private var nextFingerID = 0
 
     private func normalized(_ touch: UITouch) -> CGPoint? {
-        guard let format else { return nil }
-        let dimensions = CMVideoFormatDescriptionGetDimensions(format)
-        let rect = AVMakeRect(aspectRatio: CGSize(width: Int(dimensions.width), height: Int(dimensions.height)), insideRect: bounds)
+        guard videoSize != .zero else { return nil }
+        let rect = AVMakeRect(aspectRatio: videoSize, insideRect: bounds)
         guard rect.width > 0, rect.height > 0 else { return nil }
         let point = touch.location(in: self)
         return CGPoint(x: min(max((point.x - rect.minX) / rect.width, 0), 1),
