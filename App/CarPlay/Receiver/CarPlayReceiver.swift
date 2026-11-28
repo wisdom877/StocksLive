@@ -17,9 +17,11 @@ final class CarPlayReceiver {
     private var localInFlight = 0
     private var localInFlightSince: DispatchTime?
     private var localSkipping = false
-    private let maximumLocalInFlight = 12
+    private let maximumLocalInFlight = 16
     /// 主线程滞后超过这个毫秒数才认为“积压”。按时间判定，30/60fps 含义一致。
-    private let localLagLimitMs = 150
+    /// 150ms 对 iPad 的 SwiftUI/心率刷新太紧，偶发一帧卡顿就会丢 P 帧等 IDR；
+    /// 放宽到 220ms，先容忍一次系统抖动，避免把短暂卡顿放大成整屏冻结。
+    private let localLagLimitMs = 220
     private var localVideoEnabled = true
 
     // forceKeyFrame state: throttled sends, resent every second until a keyframe arrives.
@@ -83,10 +85,24 @@ final class CarPlayReceiver {
         }
     }
 
+    /// 控制连接也开 TCP keepalive：Wi-Fi 短暂掉线/换 AP 时，半开连接不会
+    /// 一直占着 active 状态，系统会更快把死连接交给重连逻辑。
+    private static func tcpParameters() -> NWParameters {
+        let tcp = NWProtocolTCP.Options()
+        tcp.noDelay = true
+        tcp.keepAlive = true
+        tcp.keepAliveIdle = 5
+        tcp.keepAliveInterval = 2
+        tcp.keepAliveCount = 3
+        tcp.connectionTimeout = 20
+        return NWParameters(tls: nil, tcp: tcp)
+    }
+
     private func listen(configuration: ReceiverConfiguration, identity: AccessoryIdentity, port: UInt16?, onReady: ((UInt16) -> Void)?) {
         let generation = self.generation
         do {
-            let candidate = try NWListener(using: .tcp, on: port.flatMap(NWEndpoint.Port.init(rawValue:)) ?? .any)
+            let candidate = try NWListener(using: Self.tcpParameters(),
+                                           on: port.flatMap(NWEndpoint.Port.init(rawValue:)) ?? .any)
             if let airPlayIdentity {
                 let features = CarPlayInfo.features(audio: configuration.audioEnabled)
                 let txt: [String: String] = ["deviceid": configuration.deviceID,

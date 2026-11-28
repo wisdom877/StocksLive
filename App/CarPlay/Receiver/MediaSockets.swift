@@ -1,6 +1,19 @@
 import Foundation
 import Darwin
 
+/// 视频/事件走同一套 TCP 调优：5 秒无流量开始 keepalive 探测，半开连接
+/// 在 Wi-Fi 抖动时能尽快释放；收发缓冲放大，避免 720p 关键帧突发时被默认
+/// 小缓冲反压成丢包/花屏。
+private func tuneStreamSocket(_ fd: Int32) {
+    var one: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, socklen_t(MemoryLayout<Int32>.size))
+    var idle: Int32 = 5
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, socklen_t(MemoryLayout<Int32>.size))
+    var buffer: Int32 = 512 * 1024
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer, socklen_t(MemoryLayout<Int32>.size))
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer, socklen_t(MemoryLayout<Int32>.size))
+}
+
 /// Queue-confined socket helpers. Ports are bound synchronously before SETUP replies.
 final class MediaTCPListener {
     let port: UInt16
@@ -9,11 +22,12 @@ final class MediaTCPListener {
     init(queue: DispatchQueue, peerAddress: String) throws {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw POSIXError(.EIO) }
+        tuneStreamSocket(fd)
         var address = sockaddr_in(); address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET)
         var allowed = in_addr()
         guard inet_pton(AF_INET, peerAddress, &allowed) == 1 else { close(fd); throw ProtocolError.malformed(CWL("需要 IPv4 媒体对端地址")) }
         let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
-        guard bound == 0, listen(fd, 2) == 0, fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else { close(fd); throw POSIXError(.EIO) }
+        guard bound == 0, listen(fd, 8) == 0, fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else { close(fd); throw POSIXError(.EIO) }
         var size = socklen_t(MemoryLayout<sockaddr_in>.size)
         let named = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &size) } }
         guard named == 0 else { close(fd); throw POSIXError(.EIO) }
@@ -26,6 +40,7 @@ final class MediaTCPListener {
             let client = withUnsafeMutablePointer(to: &remote) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { accept(fd, $0, &count) } }
             guard client >= 0 else { return }
             guard remote.sin_addr.s_addr == allowed.s_addr, let callback = self.onConnection else { close(client); return }
+            tuneStreamSocket(client)
             callback(MediaTCPConnection(fd: client, queue: queue))
         }
         source.setCancelHandler { close(fd) }; source.resume()
@@ -47,8 +62,9 @@ final class MediaTCPConnection {
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
         // Touch and HID reports are tiny; Nagle would hold them back behind unacknowledged data.
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
+        tuneStreamSocket(fd)
         io = DispatchIO(type: .stream, fileDescriptor: fd, queue: queue) { _ in close(fd) }
-        io.setLimit(lowWater: 1); io.setLimit(highWater: 65536)
+        io.setLimit(lowWater: 1); io.setLimit(highWater: 262144)
     }
     func start() {
         io.read(offset: 0, length: Int.max, queue: queue) { [weak self] done, data, error in
